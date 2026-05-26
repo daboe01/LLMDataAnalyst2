@@ -93,6 +93,7 @@ helper call_cloud_llm => sub ($c, $prompt, $config) {
                my $res = eval { decode_json($tx->result->body) };
                $promise->resolve($res->{candidates}[0]{content}{parts}[0]{text} // '');
            } else {
+               warn $tx->result->message;
                $promise->reject("Gemini API Fehler: " . $tx->result->message);
            }
        });
@@ -113,6 +114,7 @@ helper call_cloud_llm => sub ($c, $prompt, $config) {
                my $res = eval { decode_json($tx->result->body) };
                $promise->resolve($res->{choices}[0]{message}{content} // '');
            } else {
+               warn $tx->result->message;
                $promise->reject("OpenRouter API Fehler: " . $tx->result->message);
            }
        });
@@ -243,9 +245,10 @@ helper load_session_data => sub ($c, $session_id) {
 # ==========================================
 
 post '/api/upload' => sub ($c) {
-   my $upload = $c->req->upload('file');
-   return $c->render(json => {error => 'No file uploaded'}) unless $upload;
+   my @uploads = $c->req->upload('files[]');
+   my $upload = shift @uploads;
 
+   return $c->render(json => {error => 'No file uploaded'}) unless $upload;
    my $session_id = $c->req->param('session_id');
    $session_id =~ s/[^a-zA-Z0-9_\-]//g if defined $session_id;
    
@@ -385,6 +388,7 @@ post '/api/chat' => sub ($c) {
        });
 
    })->catch(sub ($err) {
+       warn $err;
        $c->render(json => {error => "Verarbeitungsfehler", details => "$err"}, status => 500);
    });
 };
@@ -425,5 +429,5 @@ get '/api/download/file/:session_id/:filename' => [filename => qr /.+/] => sub (
    $c->reply->file($filepath);
 };
 
-app->config(hypnotoad => {listen => ['http://*:3039'], workers => 1, heartbeat_timeout => 0, inactivity_timeout => 0});
+app->config(hypnotoad => {listen => ['http://*:3036'], workers => 1, heartbeat_timeout => 0, inactivity_timeout => 0});
 app->start;

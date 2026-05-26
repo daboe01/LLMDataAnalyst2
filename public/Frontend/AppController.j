@@ -1,13 +1,124 @@
 @import <AppKit/AppKit.j>
 @import <Foundation/CPObject.j>
 
+// Importieren der Cup-Bibliotheken
+@import <Cup/Cup.j>
+@import <Cup/CupByteCountTransformer.j>
+
 // Falls das Backend auf einem anderen Port läuft, hier die URL eintragen (z. B. @"http://localhost:3039")
 var BackendBaseURL = @"";
 
+// --- SUBCLASS: SPEECH BUBBLE VIEW ---
+@implementation SpeechBubbleBox : CPView
+{
+    BOOL    _isUser;
+    CPColor _bubbleColor;
+}
+
+- (id)initWithFrame:(CGRect)aFrame isUser:(BOOL)isUser fillColor:(CPColor)aColor
+{
+    self = [super initWithFrame:aFrame];
+    if (self) {
+        _isUser = isUser;
+        _bubbleColor = aColor;
+        [self setAutoresizingMask:CPViewWidthSizable];
+    }
+    return self;
+}
+
+- (void)drawRect:(CGRect)aRect
+{
+    var context = [[CPGraphicsContext currentContext] graphicsPort];
+    var bounds = [self bounds];
+    var w = CGRectGetWidth(bounds);
+    var h = CGRectGetHeight(bounds) - 10.0; // 10px spacing for the bottom triangle pointer
+    var r = 6.0;   // Corner radius
+    var th = 10.0; // Tail height
+
+    // --- 1. FILL PATH ---
+    CGContextBeginPath(context);
+    
+    // Top-left
+    CGContextMoveToPoint(context, r, 0);
+    
+    // Top edge
+    CGContextAddLineToPoint(context, w - r, 0);
+    CGContextAddArcToPoint(context, w, 0, w, r, r);
+    
+    // Right edge
+    CGContextAddLineToPoint(context, w, h - r);
+    CGContextAddArcToPoint(context, w, h, w - r, h, r);
+    
+    // Bottom edge with triangular tail (RHS vs LHS)
+    if (_isUser) {
+        CGContextAddLineToPoint(context, w - 21, h);
+        CGContextAddLineToPoint(context, w - 21, h + th);
+        CGContextAddLineToPoint(context, w - 35, h);
+        CGContextAddLineToPoint(context, r, h);
+    } else {
+        CGContextAddLineToPoint(context, 35, h);
+        CGContextAddLineToPoint(context, 21, h + th);
+        CGContextAddLineToPoint(context, 21, h);
+        CGContextAddLineToPoint(context, r, h);
+    }
+    
+    // Left edge
+    CGContextAddArcToPoint(context, 0, h, 0, h - r, r);
+    CGContextAddLineToPoint(context, 0, r);
+    CGContextAddArcToPoint(context, 0, 0, r, 0, r);
+    
+    CGContextClosePath(context);
+    
+    // Fill path
+    CGContextSetFillColor(context, _bubbleColor);
+    CGContextFillPath(context);
+    
+    // --- 2. OUTLINE PATH ---
+    CGContextBeginPath(context);
+    CGContextMoveToPoint(context, r, 0);
+    CGContextAddLineToPoint(context, w - r, 0);
+    CGContextAddArcToPoint(context, w, 0, w, r, r);
+    CGContextAddLineToPoint(context, w, h - r);
+    CGContextAddArcToPoint(context, w, h, w - r, h, r);
+    
+    if (_isUser) {
+        CGContextAddLineToPoint(context, w - 21, h);
+        CGContextAddLineToPoint(context, w - 21, h + th);
+        CGContextAddLineToPoint(context, w - 35, h);
+        CGContextAddLineToPoint(context, r, h);
+    } else {
+        CGContextAddLineToPoint(context, 35, h);
+        CGContextAddLineToPoint(context, 21, h + th);
+        CGContextAddLineToPoint(context, 21, h);
+        CGContextAddLineToPoint(context, r, h);
+    }
+    
+    CGContextAddArcToPoint(context, 0, h, 0, h - r, r);
+    CGContextAddLineToPoint(context, 0, r);
+    CGContextAddArcToPoint(context, 0, 0, r, 0, r);
+    CGContextClosePath(context);
+    
+    // Stroke outline
+    CGContextSetStrokeColor(context, [CPColor colorWithWhite:0.8 alpha:1.0]);
+    CGContextSetLineWidth(context, 1.0);
+    CGContextStrokePath(context);
+}
+
+@end
+
+// --- SUBCLASS: TABLE VIEW ---
+@implementation UploadDropTableView : CPTableView
+@end
+
+// --- SUBCLASS: UPLOAD BUTTON ---
+@implementation UploadDropButton : CPButton
+@end
+
+// --- MAIN CONTROLLER ---
 @implementation AppController : CPObject
 {
     CPWindow            _mainWindow;
-    CPTextView          _summaryTextView;
+    UploadDropTableView _summaryTableView;
     CPScrollView        _summaryScrollView;
     
     CPScrollView        _chatScrollView;
@@ -17,36 +128,38 @@ var BackendBaseURL = @"";
     
     CPButton            _newSessionButton;
     CPButton            _downloadScriptButton;
-    CPButton            _uploadFileButton;
+    UploadDropButton    _uploadFileButton;
     CPButton            _settingsButton;
+    
+    CPButton            _transferHistoryButton;
     
     CPProgressIndicator _progressBar;
     CPTextField         _statusLabel;
 
-    // Einstellungsfenster (Settings Sheet)
     CPWindow            _settingsWindow;
     CPPopUpButton       _servicePopUp;
     CPTextField         _endpointField;
     CPTextField         _modelField;
     CPTextField         _apiKeyField;
 
+    // History Sheet
+    CPWindow            _historySheetWindow;
+    CPTextView          _historySheetTextView;
+
     CPString            _currentSessionId;
     float               _currentChatY;
+    
+    CPMutableArray      _chatMessages; 
+    CPMutableArray      _summaryRows;     
+
+    // Cup Upload Instanz
+    Cup                 _cuploader;
 }
 
 - (void)applicationDidFinishLaunching:(CPNotification)aNotification
 {
-    // Systemmenü konfigurieren
-    var mainMenu = [CPApp mainMenu];
-    while ([mainMenu numberOfItems] > 0)
-       [mainMenu removeItemAtIndex:0];
-
-    var appItem = [mainMenu insertItemWithTitle:@"LLMDataAnalyst" action:nil keyEquivalent:nil atIndex:0];
-    var appMenu = [[CPMenu alloc] initWithTitle:@"LLMDataAnalyst"];
-    [appMenu addItemWithTitle:@"Einstellungen..." action:@selector(openSettingsSheet:) keyEquivalent:@","];
-    [appMenu addItemWithTitle:@"Neue Sitzung" action:@selector(newSessionAction:) keyEquivalent:@"n"];
-    [mainMenu setSubmenu:appMenu forItem:appItem];
-    [CPMenu setMenuBarVisible:YES];
+    _chatMessages = [CPMutableArray array];
+    _summaryRows = [CPMutableArray array];
 
     // Standard-Benutzerdaten initialisieren
     var defaults = [CPUserDefaults standardUserDefaults];
@@ -73,7 +186,6 @@ var BackendBaseURL = @"";
     ]];
     [defaults registerDefaults:defaultSettings];
 
-    // Hauptfenster im klassischen hellen Cappuccino-Stil erstellen
     _mainWindow = [[CPWindow alloc] initWithContentRect:CGRectMake(0, 0, 1150, 780) styleMask:CPBorderlessBridgeWindowMask];
     [_mainWindow setTitle:@"LLMDataAnalyst - R-Statistik-Assistent"];
     [_mainWindow center];
@@ -88,11 +200,18 @@ var BackendBaseURL = @"";
     [contentView addSubview:topBar];
 
     // Titelbeschriftung
-    var titleLabel = [[CPTextField alloc] initWithFrame:CGRectMake(20, 15, 250, 30)];
+    var titleLabel = [[CPTextField alloc] initWithFrame:CGRectMake(20, 15, 140, 30)];
     [titleLabel setStringValue:@"LLMDataAnalyst"];
     [titleLabel setTextColor:[CPColor blackColor]];
     [titleLabel setFont:[CPFont boldSystemFontOfSize:18.0]];
     [topBar addSubview:titleLabel];
+
+    // Zusammengefasster Transfer-Button (Import/Export)
+    _transferHistoryButton = [[CPButton alloc] initWithFrame:CGRectMake(170, 17, 180, 26)];
+    [_transferHistoryButton setTitle:@"Verlauf übertragen"];
+    [_transferHistoryButton setTarget:self];
+    [_transferHistoryButton setAction:@selector(openHistorySheet:)];
+    [topBar addSubview:_transferHistoryButton];
 
     // Einstellungs-Button
     _settingsButton = [[CPButton alloc] initWithFrame:CGRectMake(CGRectGetWidth(bounds) - 480, 17, 130, 26)];
@@ -129,7 +248,7 @@ var BackendBaseURL = @"";
     var leftWidth = (CGRectGetWidth([splitView bounds]) - dividerWidth) * 0.35;
     var rightWidth = (CGRectGetWidth([splitView bounds]) - dividerWidth) - leftWidth;
 
-    // LINKS: Datei-Upload und Konsolen-Ansicht
+    // LINKS: Datei-Upload und strukturierte Grid-Ansicht
     var leftContainer = [[CPView alloc] initWithFrame:CGRectMake(0, 0, leftWidth, splitHeight)];
     [leftContainer setAutoresizingMask:CPViewWidthSizable | CPViewHeightSizable];
     [leftContainer setBackgroundColor:[CPColor colorWithWhite:0.97 alpha:1.0]];
@@ -139,7 +258,7 @@ var BackendBaseURL = @"";
     [panelHeader setBackgroundColor:[CPColor colorWithWhite:0.90 alpha:1.0]];
     [leftContainer addSubview:panelHeader];
 
-    _uploadFileButton = [[CPButton alloc] initWithFrame:CGRectMake(15, 15, leftWidth - 30, 40)];
+    _uploadFileButton = [[UploadDropButton alloc] initWithFrame:CGRectMake(15, 15, leftWidth - 30, 40)];
     [_uploadFileButton setTitle:@"Datei hochladen"];
     [_uploadFileButton setAutoresizingMask:CPViewWidthSizable];
     [_uploadFileButton setTarget:self];
@@ -154,28 +273,38 @@ var BackendBaseURL = @"";
     [_statusLabel setAutoresizingMask:CPViewWidthSizable];
     [panelHeader addSubview:_statusLabel];
 
-    // Konsolen-Fenster (Klassische Text-Präsentationsbox)
+    // Strukturierte Grid-Ansicht der Variablen
     _summaryScrollView = [[CPScrollView alloc] initWithFrame:CGRectMake(0, 110, leftWidth, splitHeight - 110)];
     [_summaryScrollView setAutoresizingMask:CPViewWidthSizable | CPViewHeightSizable];
     [_summaryScrollView setAutohidesScrollers:YES];
-    [_summaryScrollView setHasHorizontalScroller:YES];
 
-    _summaryTextView = [[CPTextView alloc] initWithFrame:[_summaryScrollView bounds]];
-    [_summaryTextView setAutoresizingMask:CPViewWidthSizable | CPViewHeightSizable];
-    [_summaryTextView setMinSize:CGSizeMake(0, 0)];
-    [_summaryTextView setMaxSize:CGSizeMake(100000, 100000)];
-    [_summaryTextView setHorizontallyResizable:YES];
-    [_summaryTextView setVerticallyResizable:YES];
-    [_summaryTextView setRichText:NO];
-    [_summaryTextView setEditable:NO];
-    [_summaryTextView setBackgroundColor:[CPColor colorWithWhite:0.98 alpha:1.0]];
-    [_summaryTextView setTextColor:[CPColor blackColor]];
-    
-    // Monospaced System-Schriftart setzen
-    [_summaryTextView setFont:[CPFont fontWithName:@"Courier" size:8.0]];
-    [_summaryTextView setString:@"Bitte laden Sie einen Datensatz (CSV/Excel) hoch."];
+    _summaryTableView = [[UploadDropTableView alloc] initWithFrame:[_summaryScrollView bounds]];
+    [_summaryTableView setUsesAlternatingRowBackgroundColors:YES];
+    [_summaryTableView setCornerView:nil];
+    [_summaryTableView setDataSource:self];
 
-    [_summaryScrollView setDocumentView:_summaryTextView];
+    // Spalte 1: Variable
+    var colVar = [[CPTableColumn alloc] initWithIdentifier:@"variable"];
+    [[colVar headerView] setStringValue:@"Variable"];
+    [colVar setWidth:110];
+    [colVar setMinWidth:50];
+    [_summaryTableView addTableColumn:colVar];
+
+    // Spalte 2: Typ
+    var colType = [[CPTableColumn alloc] initWithIdentifier:@"type"];
+    [[colType headerView] setStringValue:@"Typ"];
+    [colType setWidth:60];
+    [colType setMinWidth:40];
+    [_summaryTableView addTableColumn:colType];
+
+    // Spalte 3: Vorschau
+    var colPreview = [[CPTableColumn alloc] initWithIdentifier:@"preview"];
+    [[colPreview headerView] setStringValue:@"Vorschau"];
+    [colPreview setWidth:leftWidth - 190];
+    [colPreview setMinWidth:100];
+    [_summaryTableView addTableColumn:colPreview];
+
+    [_summaryScrollView setDocumentView:_summaryTableView];
     [leftContainer addSubview:_summaryScrollView];
     [splitView addSubview:leftContainer];
 
@@ -232,8 +361,78 @@ var BackendBaseURL = @"";
     [splitView addSubview:rightContainer];
     [contentView addSubview:splitView];
 
+    // --- CUP INITIALISIERUNG ---
+    _cuploader = [[Cup alloc] initWithURL:[self uploadURL]];
+    [_cuploader setRemoveCompletedFiles:YES];
+    [_cuploader setAutoUpload:YES];
+    [_cuploader setDelegate:self];
+
+    // Drop Targets für Drag & Drop über Cup registrieren
+    [_cuploader setDropTarget:_uploadFileButton];
+
+    // Binding für die dynamische URL-Aktualisierung
+    [_cuploader bind:@"URL" toObject:self withKeyPath:@"uploadURL" options:nil];
+
     [_mainWindow orderFront:self];
     [self initializeNewSessionOnClient];
+}
+
+// --- DYNAMISCHER UPLOAD URL GETTER ---
+- (CPString)uploadURL
+{
+    var configDict = [self currentLLMConfigPayload];
+    var configJSObject = {};
+    var keys = [configDict allKeys];
+    for (var i = 0; i < [keys count]; i++) {
+        var k = [keys objectAtIndex:i];
+        configJSObject[k] = [configDict objectForKey:k];
+    }
+    var configJSON = JSON.stringify(configJSObject);
+
+    return [self backendPath:@"/api/upload"] + 
+           "?session_id=" + encodeURIComponent(_currentSessionId || @"") + 
+           "&llm_config=" + encodeURIComponent(configJSON);
+}
+
+// --- TABLE VIEW DATA SOURCE METHODS (GRID) ---
+
+- (int)numberOfRowsInTableView:(CPTableView)tableView
+{
+    return [_summaryRows count];
+}
+
+- (id)tableView:(CPTableView)tableView objectValueForTableColumn:(CPTableColumn)tableColumn row:(int)row
+{
+    var rowData = [_summaryRows objectAtIndex:row];
+    var ident = [tableColumn identifier];
+    return [rowData objectForKey:ident];
+}
+
+// --- PARSER FÜR DIE STRUKTURDATEN ---
+
+- (void)parseSummaryText:(CPString)summaryText
+{
+    [_summaryRows removeAllObjects];
+    
+    var lines = summaryText.split(/\r?\n/);
+    for (var i = 0; i < lines.length; i++) {
+        var line = lines[i];
+        
+        var match = line.match(/^\s*\$\s*([a-zA-Z0-9_\.]+)\s*:\s*([a-zA-Z0-9_\(\)]+)\s+(.*)$/);
+        if (match) {
+            var varName = match[1].trim();
+            var varType = match[2].trim();
+            var varPreview = match[3].trim();
+            
+            var rowDict = [CPDictionary dictionaryWithObjectsAndKeys:
+                varName, @"variable",
+                varType, @"type",
+                varPreview, @"preview"
+            ];
+            [_summaryRows addObject:rowDict];
+        }
+    }
+    [_summaryTableView reloadData];
 }
 
 // --- CONFIGURATION SHEET ---
@@ -321,7 +520,6 @@ var BackendBaseURL = @"";
 
     [_settingsWindow setTitle:@"Schnittstellen-Konfiguration"];
     
-    // Gespeicherte Konfiguration laden
     var defaults = [CPUserDefaults standardUserDefaults];
     var activeService = [defaults objectForKey:@"LLMServiceType"] || @"ollama";
 
@@ -405,6 +603,9 @@ var BackendBaseURL = @"";
 
     [self closeSettingsSheet:sender];
     [_statusLabel setStringValue:@"Einstellungen gespeichert."];
+
+    // URL aktualisieren nach Einstellungsänderung
+    [_cuploader setURL:[self uploadURL]];
 }
 
 // --- CLIENT-SEITIGES MODEL FÜR PAYLOADS ---
@@ -447,8 +648,10 @@ var BackendBaseURL = @"";
     _currentSessionId = "session_" + date + "_" + rand;
 
     _currentChatY = 20;
+    [_chatMessages removeAllObjects];
+    [_summaryRows removeAllObjects];
+    [_summaryTableView reloadData];
     
-    [_summaryTextView setString:@"Bitte laden Sie einen Datensatz hoch."];
     [_chatInputField setEnabled:NO];
     [_chatInputField setPlaceholderString:@"Warte auf Datei-Upload..."];
     [_chatSendButton setEnabled:NO];
@@ -458,7 +661,10 @@ var BackendBaseURL = @"";
     [[_chatDocumentView subviews] makeObjectsPerformSelector:@selector(removeFromSuperview)];
     [_chatDocumentView setFrameSize:CGSizeMake(CGRectGetWidth([_chatScrollView bounds]) - 20, CGRectGetHeight([_chatScrollView bounds]))];
     
-    [self appendMessageWithSender:@"bot" text:@"Sitzung gestartet. Bitte laden Sie eine Datei hoch." isError:NO downloads:nil];
+    [self appendMessageWithSender:@"bot" text:@"Sitzung gestartet. Bitte laden Sie eine Datei hoch." isError:NO downloads:nil saveToHistory:YES];
+
+    // URL an den neuen Session Key anpassen
+    [_cuploader setURL:[self uploadURL]];
 }
 
 - (void)newSessionAction:(id)sender
@@ -466,97 +672,88 @@ var BackendBaseURL = @"";
     [self initializeNewSessionOnClient];
 }
 
-// --- NATIVE DATEIÜBERTRAGUNG (HTML5) ---
-
 - (void)triggerNativeUploadAction:(id)sender
 {
-    var selfRef = self;
-    var fileInput = document.createElement('input');
-    fileInput.type = 'file';
-    fileInput.onchange = function(e) {
-        var file = e.target.files[0];
-        if (file) {
-            [selfRef processUploadWithFile:file];
-        }
-    };
-    fileInput.click();
+    // Upload-URL vor Absenden aktualisieren
+    [_cuploader setURL:[self uploadURL]];
+
+    // Native Cups Upload-Auswahl aufrufen (beseitigt submit-Fehler auf null)
+    [_cuploader addFiles:sender];
 }
 
-- (void)processUploadWithFile:(id)file
+// --- CUP DELEGATE METHODS ---
+
+- (void)cup:(Cup)aCup uploadDidStartForFile:(CupFile)aFile
 {
-    // Scoped Closure-Variablen für asynchronen Kontext sichern
-    var progressBar = _progressBar,
-        selfRef = self,
-        uploadFileButton = _uploadFileButton,
-        summaryTextView = _summaryTextView,
-        statusLabel = _statusLabel,
-        chatInputField = _chatInputField,
-        chatSendButton = _chatSendButton,
-        downloadScriptButton = _downloadScriptButton;
+    [_progressBar setHidden:NO];
+    [_progressBar startAnimation:self];
+    [_uploadFileButton setEnabled:NO];
+    [_statusLabel setStringValue:@"Sende Datei via Cup..."];
+}
 
-    [progressBar setHidden:NO];
-    [progressBar startAnimation:selfRef];
-    [uploadFileButton setEnabled:NO];
-    [statusLabel setStringValue:@"Sende Datei an Backend-Dienst..."];
+// Implementierung für die 3-Argument-Signatur
+- (void)cup:(Cup)aCup uploadDidCompleteForFile:(CupFile)aFile response:(CPString)aResponse
+{
+    [self processCompletedUploadWithResponse:aResponse];
+}
 
-    var uploadUrl = [self backendPath:@"/api/upload"];
-    var formData = new FormData();
-    formData.append('file', file);
-    formData.append('session_id', _currentSessionId);
-    
-    // Aktuelle LLM-Konfiguration mitsenden
-    var configDict = [self currentLLMConfigPayload];
-    var configJSObject = {};
-    var keys = [configDict allKeys];
-    for (var i = 0; i < [keys count]; i++) {
-        var k = [keys objectAtIndex:i];
-        configJSObject[k] = [configDict objectForKey:k];
+// Implementierung für die alternative 2-Argument-Signatur (zur Abwärtskompatibilität)
+- (void)cup:(Cup)aCup uploadDidCompleteForFile:(CupFile)aFile
+{
+    var responseText = nil;
+    if ([aFile respondsToSelector:@selector(response)]) {
+        responseText = [aFile response];
     }
-    formData.append('llm_config', JSON.stringify(configJSObject));
+    [self processCompletedUploadWithResponse:responseText];
+}
 
-    fetch(uploadUrl, {
-        method: 'POST',
-        body: formData
-    })
-    .then(function(response) {
-        if (!response.ok) {
-            throw new Error("Fehlerhafter Server-Antwortstatus: " + response.status);
-        }
-        return response.json();
-    })
-    .then(function(data) {
-        [progressBar stopAnimation:selfRef];
-        [progressBar setHidden:YES];
-        [uploadFileButton setEnabled:YES];
+- (void)processCompletedUploadWithResponse:(CPString)responseText
+{
+    [_progressBar stopAnimation:self];
+    [_progressBar setHidden:YES];
+    [_uploadFileButton setEnabled:YES];
+
+    try {
+        var data = JSON.parse(responseText);
 
         if (data.error) {
-            [summaryTextView setString:@"Import-Fehler:\n" + data.error];
-            [statusLabel setStringValue:@"Upload failed."];
-            [selfRef appendMessageWithSender:@"bot" text:@"Fehler beim Laden: " + data.error isError:YES downloads:nil];
+            [_summaryRows removeAllObjects];
+            [_summaryTableView reloadData];
+            [_statusLabel setStringValue:@"Upload fehlgeschlagen."];
+            [self appendMessageWithSender:@"bot" text:@"Fehler beim Laden: " + data.error isError:YES downloads:nil saveToHistory:YES];
             return;
         }
 
         if (data.session_id) {
             _currentSessionId = data.session_id;
+            [_cuploader setURL:[self uploadURL]];
         }
 
-        [summaryTextView setString:(data.summary || "Keine strukturelle Zusammenfassung verfügbar.")];
-        [chatInputField setEnabled:YES];
-        [chatInputField setPlaceholderString:@"Was soll berechnet oder grafisch aufbereitet werden?"];
-        [chatInputField becomeFirstResponder];
-        [chatSendButton setEnabled:YES];
-        [downloadScriptButton setEnabled:YES];
-        [statusLabel setStringValue:@"Datensatz geladen."];
+        // Struktur-Daten parsen und das linke Grid befüllen
+        [self parseSummaryText:(data.summary || "")];
 
-        [selfRef appendMessageWithSender:@"bot" text:@"Datei erfolgreich verarbeitet. Analyse-Sitzung ist bereit." isError:NO downloads:nil];
-    })
-    .catch(function(error) {
-        [progressBar stopAnimation:selfRef];
-        [progressBar setHidden:YES];
-        [uploadFileButton setEnabled:YES];
-        [statusLabel setStringValue:@"Netzwerk-Übertragungsfehler."];
-        [selfRef appendMessageWithSender:@"bot" text:@"Kommunikation zum Server fehlgeschlagen: " + error.message isError:YES downloads:nil];
-    });
+        [_chatInputField setEnabled:YES];
+        [_chatInputField setPlaceholderString:@"Was soll berechnet oder grafisch aufbereitet werden?"];
+        [_chatInputField becomeFirstResponder];
+        [_chatSendButton setEnabled:YES];
+        [_downloadScriptButton setEnabled:YES];
+        [_statusLabel setStringValue:@"Datensatz geladen."];
+
+        [self appendMessageWithSender:@"bot" text:@"Datei erfolgreich verarbeitet. Analyse-Sitzung ist bereit." isError:NO downloads:nil saveToHistory:YES];
+    } catch (e) {
+        [_statusLabel setStringValue:@"Fehler bei Serverantwort."];
+        debugger
+        [self appendMessageWithSender:@"bot" text:@"Kommunikation zum Server unvollständig." isError:YES downloads:nil saveToHistory:YES];
+    }
+}
+
+- (void)cup:(Cup)aCup uploadDidFailForFile:(CupFile)aFile error:(CPString)anError
+{
+    [_progressBar stopAnimation:self];
+    [_progressBar setHidden:YES];
+    [_uploadFileButton setEnabled:YES];
+    [_statusLabel setStringValue:@"Netzwerk-Übertragungsfehler."];
+    [self appendMessageWithSender:@"bot" text:@"Kommunikation zum Server fehlgeschlagen: " + anError isError:YES downloads:nil saveToHistory:YES];
 }
 
 // --- CHAT-STEUERUNG ---
@@ -568,7 +765,6 @@ var BackendBaseURL = @"";
         return;
     }
 
-    // Scoped Closure-Variablen für asynchronen Kontext sichern
     var progressBar = _progressBar,
         selfRef = self,
         chatInputField = _chatInputField,
@@ -582,11 +778,10 @@ var BackendBaseURL = @"";
     [progressBar startAnimation:selfRef];
     [statusLabel setStringValue:@"Anfrage wird verarbeitet..."];
 
-    [self appendMessageWithSender:@"user" text:prompt isError:NO downloads:nil];
+    [self appendMessageWithSender:@"user" text:prompt isError:NO downloads:nil saveToHistory:YES];
 
     var chatUrl = [self backendPath:@"/api/chat"];
     
-    // Aktuelle Konfiguration mitsenden
     var configDict = [self currentLLMConfigPayload];
     var configJSObject = {};
     var keys = [configDict allKeys];
@@ -625,13 +820,13 @@ var BackendBaseURL = @"";
         if (data.error || data.success === false) {
             var errText = data.error || "Unerwarteter Fehler im Backend.";
             if (data.details) errText += "\n\nDetails: " + data.details;
-            [selfRef appendMessageWithSender:@"bot" text:@"Fehler:\n" + errText isError:YES downloads:nil];
+            [selfRef appendMessageWithSender:@"bot" text:@"Fehler:\n" + errText isError:YES downloads:nil saveToHistory:YES];
         } else {
             var msg = "Code erfolgreich ausgeführt (" + data.attempts + " Versuche).";
             if (data.output && (!data.downloads || data.downloads.length === 0)) {
                 msg += "\n\nKonsole:\n" + data.output;
             }
-            [selfRef appendMessageWithSender:@"bot" text:msg isError:NO downloads:data.downloads];
+            [selfRef appendMessageWithSender:@"bot" text:msg isError:NO downloads:data.downloads saveToHistory:YES];
         }
     })
     .catch(function(error) {
@@ -641,15 +836,151 @@ var BackendBaseURL = @"";
         [chatInputField becomeFirstResponder];
         [chatSendButton setEnabled:YES];
         [statusLabel setStringValue:@"Verarbeitungsfehler."];
-        [selfRef appendMessageWithSender:@"bot" text:@"Fehler bei der Kommunikation: " + error.message isError:YES downloads:nil];
+        [selfRef appendMessageWithSender:@"bot" text:@"Fehler bei der Kommunikation: " + error.message isError:YES downloads:nil saveToHistory:YES];
     });
+}
+
+// --- UNIFIED IMPORT/EXPORT VERLAUF SHEET ---
+
+- (void)openHistorySheet:(id)sender
+{
+    if (!_historySheetWindow)
+    {
+        _historySheetWindow = [[CPWindow alloc] initWithContentRect:CGRectMake(0, 0, 580, 460)
+                                                   styleMask:CPTitledWindowMask | CPClosableWindowMask | CPResizableWindowMask];
+        
+        var sheetContentView = [_historySheetWindow contentView];
+        var sheetBounds = [sheetContentView bounds];
+
+        var infoLabel = [[CPTextField alloc] initWithFrame:CGRectMake(15, 10, CGRectGetWidth(sheetBounds) - 30, 45)];
+        [infoLabel setStringValue:@"Kopieren Sie das JSON unten zum Exportieren, oder fügen Sie ein altes JSON ein und klicken Sie auf \"Importieren\"."];
+        [infoLabel setFont:[CPFont systemFontOfSize:11.0]];
+        [infoLabel setTextColor:[CPColor darkGrayColor]];
+        [infoLabel setLineBreakMode:CPLineBreakByWordWrapping];
+        [infoLabel setAutoresizingMask:CPViewWidthSizable | CPViewMaxYMargin];
+        [sheetContentView addSubview:infoLabel];
+
+        var scroll = [[CPScrollView alloc] initWithFrame:CGRectMake(15, 60, CGRectGetWidth(sheetBounds) - 30, CGRectGetHeight(sheetBounds) - 130)];
+        [scroll setAutoresizingMask:CPViewWidthSizable | CPViewHeightSizable];
+        [scroll setAutohidesScrollers:YES];
+
+        _historySheetTextView = [[CPTextView alloc] initWithFrame:[scroll bounds]];
+        [_historySheetTextView setAutoresizingMask:CPViewWidthSizable | CPViewHeightSizable];
+        [_historySheetTextView setFont:[CPFont fontWithName:@"Courier" size:11.0]];
+        [_historySheetTextView setRichText:NO];
+        [scroll setDocumentView:_historySheetTextView];
+        [sheetContentView addSubview:scroll];
+
+        var btnY = CGRectGetHeight(sheetBounds) - 50;
+
+        var cancelBtn = [[CPButton alloc] initWithFrame:CGRectMake(CGRectGetWidth(sheetBounds) - 235, btnY, 110, 26)];
+        [cancelBtn setTitle:@"Schließen"];
+        [cancelBtn setAutoresizingMask:CPViewMinXMargin | CPViewMinYMargin];
+        [cancelBtn setTarget:self];
+        [cancelBtn setAction:@selector(closeHistorySheet:)];
+        [sheetContentView addSubview:cancelBtn];
+
+        var actionBtn = [[CPButton alloc] initWithFrame:CGRectMake(CGRectGetWidth(sheetBounds) - 115, btnY, 100, 26)];
+        [actionBtn setTitle:@"Importieren"];
+        [actionBtn setAutoresizingMask:CPViewMinXMargin | CPViewMinYMargin];
+        [actionBtn setTarget:self];
+        [actionBtn setAction:@selector(executeImportHistoryAction:)];
+        [sheetContentView addSubview:actionBtn];
+    }
+
+    [_historySheetWindow setTitle:@"Verlauf übertragen"];
+    
+    // Serialisieren der aktuellen Messages in JSON
+    var serializedArray = [];
+    for (var i = 0; i < [_chatMessages count]; i++) {
+        var msg = [_chatMessages objectAtIndex:i];
+        var jsObj = {
+            "sender": msg.sender,
+            "text": msg.text,
+            "isError": msg.isError,
+            "downloads": msg.downloads ? [msg.downloads array] : null
+        };
+        serializedArray.push(jsObj);
+    }
+    
+    var jsonString = JSON.stringify(serializedArray, null, 2);
+    [_historySheetTextView setString:jsonString];
+
+    [CPApp beginSheet:_historySheetWindow
+        modalForWindow:_mainWindow
+         modalDelegate:self
+        didEndSelector:nil
+           contextInfo:nil];
+           
+    // Autofokus und Text-Auswahl nach kurzem Delay
+    window.setTimeout(function() { [_historySheetTextView selectAll:self]; }, 100);
+}
+
+- (void)closeHistorySheet:(id)sender
+{
+    [CPApp endSheet:_historySheetWindow];
+    [_historySheetWindow orderOut:self];
+}
+
+- (void)executeImportHistoryAction:(id)sender
+{
+    var jsonString = [_historySheetTextView string];
+    if (jsonString && [jsonString length] > 0)
+    {
+        try {
+            var parsedArray = JSON.parse(jsonString);
+            if (Array.isArray(parsedArray)) {
+                [self loadHistoryFromParsedArray:parsedArray];
+            } else {
+                [_statusLabel setStringValue:@"Fehler: Ungültiges JSON-Format im Textbereich."];
+            }
+        } catch(e) {
+            [_statusLabel setStringValue:@"Fehler beim Parsen der JSON-Daten."];
+        }
+    }
+    [self closeHistorySheet:sender];
+}
+
+- (void)loadHistoryFromParsedArray:(id)parsedArray
+{
+    [_chatMessages removeAllObjects];
+    [_summaryRows removeAllObjects];
+    [_summaryTableView reloadData];
+    
+    [[_chatDocumentView subviews] makeObjectsPerformSelector:@selector(removeFromSuperview)];
+    _currentChatY = 20;
+
+    for (var i = 0; i < parsedArray.length; i++) {
+        var msg = parsedArray[i];
+        var cpDownloads = nil;
+        if (msg.downloads && msg.downloads.length > 0) {
+            cpDownloads = [CPArray arrayWithArray:msg.downloads];
+        }
+        [self appendMessageWithSender:msg.sender 
+                                 text:msg.text 
+                              isError:msg.isError 
+                            downloads:cpDownloads 
+                        saveToHistory:YES];
+    }
+    [_statusLabel setStringValue:@"Verlauf erfolgreich geladen."];
 }
 
 // --- DYNAMISCHER CHAT-FEED ---
 
-- (void)appendMessageWithSender:(CPString)sender text:(CPString)text isError:(BOOL)isError downloads:(CPArray)downloads
+- (void)appendMessageWithSender:(CPString)sender text:(CPString)text isError:(BOOL)isError downloads:(CPArray)downloads saveToHistory:(BOOL)save
 {
-    var docWidth = CGRectGetWidth([_chatScrollView bounds]) - 30;
+    if (save) {
+        var historyItem = {
+            "sender": sender,
+            "text": text,
+            "isError": isError,
+            "downloads": downloads ? [downloads copy] : nil
+        };
+        [_chatMessages addObject:historyItem];
+    }
+
+    // Breite des Dokuments abzüglich Scrollbar-Puffer (verhindert Abschneiden des rechten Rands)
+    var docWidth = CGRectGetWidth([_chatScrollView bounds]) - 50;
     
     var lines = Math.ceil(text.length / (docWidth / 7.5));
     var textHeight = Math.max(25, lines * 18);
@@ -673,35 +1004,26 @@ var BackendBaseURL = @"";
         cardHeight += (imageCount * 280);
     }
 
-    var cardBox = [[CPBox alloc] initWithFrame:CGRectMake(15, _currentChatY, docWidth, cardHeight)];
-    [cardBox setBoxType:CPBoxCustom];
-    [cardBox setBorderType:CPLineBorder];
-    [cardBox setBorderWidth:1.0];
-    [cardBox setBorderColor:[CPColor colorWithWhite:0.8 alpha:1.0]];
-    [cardBox setCornerRadius:6.0];
-    [cardBox setAutoresizingMask:CPViewWidthSizable];
-
-    if ([sender isEqualToString:@"user"]) {
-        [cardBox setFillColor:[CPColor colorWithRed:0.90 green:0.93 blue:1.0 alpha:1.0]];
-        [cardBox setTitle:@"Nutzer"];
-    } else {
-        if (isError) {
-            [cardBox setFillColor:[CPColor colorWithRed:1.0 green:0.90 blue:0.90 alpha:1.0]];
-        } else {
-            [cardBox setFillColor:[CPColor colorWithWhite:0.96 alpha:1.0]];
-        }
-        [cardBox setTitle:@"System"];
+    var isUserMsg = [sender isEqualToString:@"user"];
+    var fillColor = [CPColor colorWithWhite:0.96 alpha:1.0]; // System (LHS)
+    if (isUserMsg) {
+        fillColor = [CPColor colorWithRed:0.90 green:0.93 blue:1.0 alpha:1.0]; // User (RHS)
+    } else if (isError) {
+        fillColor = [CPColor colorWithRed:1.0 green:0.90 blue:0.90 alpha:1.0]; // Fehler
     }
 
-    var container = [cardBox contentView];
-    
+    // Erstellen der Box samt dem integrierten Dreiecks-Tail an der Unterseite (h + 10)
+    var cardBox = [[SpeechBubbleBox alloc] initWithFrame:CGRectMake(15, _currentChatY, docWidth, cardHeight + 10) 
+                                                  isUser:isUserMsg 
+                                               fillColor:fillColor];
+
     var textLabel = [[CPTextField alloc] initWithFrame:CGRectMake(15, 10, docWidth - 30, textHeight)];
     [textLabel setStringValue:text];
     [textLabel setTextColor:[CPColor blackColor]];
-    [textLabel setFont:[CPFont systemFontOfSize:12.0]];
+    [textLabel setFont:[CPFont systemFontOfSize:11.0]];
     [textLabel setLineBreakMode:CPLineBreakByWordWrapping];
     [textLabel setAutoresizingMask:CPViewWidthSizable];
-    [container addSubview:textLabel];
+    [cardBox addSubview:textLabel];
 
     if (downloads && [downloads count] > 0) {
         var runningY = textHeight + 20;
@@ -719,16 +1041,16 @@ var BackendBaseURL = @"";
                 [imgLabel setStringValue:filename + ":"];
                 [imgLabel setTextColor:[CPColor darkGrayColor]];
                 [imgLabel setFont:[CPFont boldSystemFontOfSize:11.0]];
-                [container addSubview:imgLabel];
+                [cardBox addSubview:imgLabel];
                 runningY += 22;
 
                 var cpImage = [[CPImage alloc] initWithContentsOfFile:bustUrl];
                 var imageView = [[CPImageView alloc] initWithFrame:CGRectMake(15, runningY, docWidth - 30, 220)];
                 [imageView setImage:cpImage];
-                [imageView setImageScaling:CPScaleProportionallyUpOrDown];
+                [imageView setImageScaling:CPScaleProportionally];
                 [imageView setAutoresizingMask:CPViewWidthSizable];
                 [imageView setBackgroundColor:[CPColor whiteColor]];
-                [container addSubview:imageView];
+                [cardBox addSubview:imageView];
                 runningY += 230;
 
                 var dlPlotButton = [[CPButton alloc] initWithFrame:CGRectMake(15, runningY, 160, 24)];
@@ -736,7 +1058,7 @@ var BackendBaseURL = @"";
                 [dlPlotButton setTarget:self];
                 [dlPlotButton setAction:@selector(openResourceAction:)];
                 dlPlotButton._representedObject = resolvedUrl;
-                [container addSubview:dlPlotButton];
+                [cardBox addSubview:dlPlotButton];
                 runningY += 35;
             } else {
                 var dlFileButton = [[CPButton alloc] initWithFrame:CGRectMake(15, runningY, docWidth - 30, 30)];
@@ -744,8 +1066,7 @@ var BackendBaseURL = @"";
                 [dlFileButton setTarget:self];
                 [dlFileButton setAction:@selector(openResourceAction:)];
                 [dlFileButton setAutoresizingMask:CPViewWidthSizable];
-                dlFileButton._representedObject = resolvedUrl;
-                [container addSubview:dlFileButton];
+                [cardBox addSubview:dlFileButton];
                 
                 runningY += 40;
             }
@@ -753,9 +1074,9 @@ var BackendBaseURL = @"";
     }
 
     [_chatDocumentView addSubview:cardBox];
-    
-    _currentChatY += cardHeight + 15;
-    [_chatDocumentView setFrameSize:CGSizeMake(docWidth, _currentChatY + 50)];
+
+    _currentChatY += cardHeight + 25; 
+    [_chatDocumentView setFrameSize:CGSizeMake(CGRectGetWidth([_chatScrollView bounds]), _currentChatY + 50)];
 
     var boundsHeight = CGRectGetHeight([_chatScrollView bounds]);
     if (_currentChatY > boundsHeight) {
