@@ -5,6 +5,7 @@ LLMDataAnalyst is a self-hosted, web-based statistical data analysis assistant. 
 The system runs generated R code in isolated, session-specific directories, captures console outputs or generated plots, and handles syntax issues using an automatic self-repair loop before returning feedback to the user.
 
 ---
+<img width="1088" height="857" alt="Bildschirmfoto 2026-05-26 um 18 16 53" src="https://github.com/user-attachments/assets/f5c2791a-0998-421a-882f-e51f2c2268fc" />
 
 ## System Architecture
 
