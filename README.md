@@ -22,8 +22,8 @@ The application is structured into the following primary components:
                                                         ▼               ▼
                                                  ┌─────────────┐ ┌──────────────┐
                                                  │   LLM API   │ │Local R Engine│
-                                                 │  (Cloud or  │ │ (R-Stats &  │
-                                                 │   Local)    │ │ Plot Gen)  │
+                                                 │  (Cloud or  │ │ (R-Stats &   │
+                                                 │   Local)    │ │ Plot Gen)    │
                                                  └─────────────┘ └──────────────┘
 ```
 
