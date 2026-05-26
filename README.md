@@ -1,131 +1,100 @@
-# AI-Powered Writing Assistant
+# LLMDataAnalyst
 
-A web-based, desktop-class text editor and proofreading suite. The application analyzes narrative text paragraph-by-paragraph, highlights errors (spelling, grammar, clarity, and style) with visual overlays, and allows users to apply suggested corrections with a single click.
+LLMDataAnalyst is a self-hosted, web-based statistical data analysis assistant. It pairs a desktop-class web frontend (built with **Objective-J/Cappuccino**) with a lightweight microservice backend (built with **Perl/Mojolicious**) to analyze and visualize datasets using automated R script generation and execution.
 
-This project is built using a decoupled client-server architecture:
-*   **Frontend**: A desktop-style rich-text UI built on **Cappuccino (Objective-J)**.
-*   **Backend**: A lightweight asynchronous API gateway built on **Mojolicious::Lite (Perl)**.
-
----
-<img width="1011" height="837" alt="Bildschirmfoto 2026-05-23 um 19 35 44" src="https://github.com/user-attachments/assets/57864753-bbd3-4ac8-8c76-0979b2eb6f8b" />
-
-## Key Features
-
-*   **Multilingual Analysis**: Real-time language switching (German / English) utilizing different LLM run configurations (`48` and `49`).
-*   **Context-Aware Higlighting**: Highlights text segments based on four distinct categories:
-    *   🔴 **Spelling**: Typos and spelling mistakes.
-    *   🔵 **Grammar**: Syntax issues, tense issues, and punctuation.
-    *   🟢 **Clarity**: Passive voice, overly wordy sentences, or confusing phrasing.
-    *   🟣 **Style**: Tone improvements and formal adjustments.
-*   **Fault-Tolerant String Matching**: Instead of relying on LLM character count offsets (which are often inaccurate), the Perl backend programmatically computes exact offsets using robust substring searches (`index`).
-*   **Dynamic Range Shifting**: Applying a correction dynamically shifts the offsets of all remaining alerts in the paragraph, preventing highlight misalignment during active editing.
+The system runs generated R code in isolated, session-specific directories, captures console outputs or generated plots, and handles syntax issues using an automatic self-repair loop before returning feedback to the user.
 
 ---
 
-## Architecture Overview
+## System Architecture
 
-```text
- ┌────────────────────────┐         POST /DBB/analyze_text         ┌─────────────────────────┐
- │                        │  ───────────────────────────────────>  │                         │
- │  Cappuccino Frontend   │                                        │   Mojolicious Backend   │
- │     (Objective-J)      │  <───────────────────────────────────  │         (Perl)          │
- │                        │        JSON Array of Paragraphs        │                         │
- └────────────────────────┘                                        └────────────┬────────────┘
-                                                                                │
-                                                                                │  POST (Asynchronous)
-                                                                                ▼
-                                                                   ┌─────────────────────────┐
-                                                                   │       LLM Service       │
-                                                                   │  (Run 48: EN / 49: DE)  │
-                                                                   └─────────────────────────┘
+The application is structured into two primary components:
+
+```
+┌─────────────────────────────────┐          JSON Requests         ┌──────────────────────────────┐
+│       Cappuccino Frontend       │ ─────────────────────────────> │       Perl Mojolicious       │
+│    (Desktop-class Web UI)       │ <───────────────────────────── │           Backend            │
+└─────────────────────────────────┘          Plots / Data          └──────────────────────────────┘
+                                                                                  │
+                                                                                  │ (Statistics::R)
+                                                                                  ▼
+                                                                   ┌──────────────────────────────┐
+                                                                   │        Local R Engine        │
+                                                                   │   (Execution & Output Gen)   │
+                                                                   └──────────────────────────────┘
+```
+
+1. **Frontend (Objective-J / Cappuccino)**:
+   * **Structured Dataset Grid**: Parses R's structure output (`str(df)`) and renders variables, data types, and preview rows in a clean `CPTableView` [4].
+   * **Drag-and-Drop Ingestion**: Both the main table grid and the upload button accept direct file drops from your operating system, triggering automatic data processing [4].
+   * **Custom Vector Speech Bubbles**: The chat window renders speech bubbles and triangular pointing tails as cohesive, single-path canvas vectors (`SpeechBubbleBox`), preventing browser-specific layering and clipping issues [4].
+   * **Session Sync & Transfer**: Enables users to export or import their live chat history and state using a single copy-pasteable JSON Transfer Sheet [4].
+   * **LLM Provider Configuration**: A settings sheet lets the user configure and switch between local or cloud-based LLM providers.
+
+2. **Backend (Perl / Mojolicious::Lite)**:
+   * **Unified Multi-Model Client**: Direct stateless integrations for Ollama (local), Groq, Google Gemini, and OpenRouter. Client credentials and settings are kept in the browser and passed on-demand.
+   * **Isolated Workspaces**: Provisions clean, temporary folders for each active session to execute scripts and output visualizations securely.
+   * **Error Self-Correction Loop**: If R script execution encounters syntax errors, the backend intercepts the message, prompts the LLM with the error log, and attempts to repair the script in up to 3 iterative cycles before returning the output.
+   * **Asset Serving**: Hosts generated analytical scripts (R) and static visualization plots (PNG, SVG, JPG) dynamically.
+
+---
+
+## Prerequisites
+
+### For the Backend & Execution Engine:
+* **Perl 5.20+** with the following CPAN modules:
+  * `Mojolicious::Lite` [2]
+  * `Mojo::UserAgent` [2]
+  * `Statistics::R` [2]
+  * `Encode`, `File::Temp`, `JSON` [2]
+* A valid **R** installation reachable on the system path [2]. It is recommended to pre-install packages such as `ggplot2`, `readr`, and `readxl` within your R environment, as generated R code frequently depends on them.
+
+---
+
+## Installation & Execution
+
+### 1. Set Up R Dependencies
+Open your system's R console and ensure the required packages are installed:
+```R
+install.packages(c("readr", "readxl", "ggplot2"))
+```
+
+### 2. Prepare the Application Files
+Since the Mojolicious backend serves the frontend static assets, your compiled Cappuccino files must be placed within the `public/` directory of your project workspace:
+```
+your-project-directory/
+├── backend.pl
+└── public/
+    ├── index.html
+    ├── AppController.j
+    └── (other Cappuccino framework assets)
+```
+
+### 3. Start the Server
+Start the development server using Mojolicious's `morbo` [2]. This serves both the API endpoints and the Cappuccino web UI on port `3036`:
+```bash
+morbo ./backend.pl --listen "http://*:3036"
+```
+
+### 4. Access the Application
+Open your browser and navigate to:
+```
+http://localhost:3036
 ```
 
 ---
 
-## Tech Stack
+## Configuring LLM Providers
 
-*   **Frontend**: Objective-J, Cappuccino SDK (AppKit & Foundation ports for the web)
-*   **Backend**: Perl 5, Mojolicious::Lite, Mojo::UserAgent, Mojo::Promise
-*   **Integration**: JSON REST API
+The **Settings...** dialog inside the web interface allows you to define your active LLM operator. Configuration details are preserved locally in the browser (`CPUserDefaults`) and are transmitted to the backend only during request execution:
 
----
-
-## Getting Started
-
-### Prerequisites
-
-*   **Frontend**: A local web server to serve the static Cappuccino assets (e.g., Python's `http.server` or Apache/Nginx).
-*   **Backend**: Perl 5 (ActivePerl or Perlbrew) with Mojolicious installed.
-
-### Installation
-
-1.  **Clone the repository**:
-    ```bash
-    git clone https://github.com/your-username/ai-writing-assistant.git
-    cd ai-writing-assistant
-    ```
-
-2.  **Install Perl dependencies**:
-    ```bash
-    cpanm Mojolicious
-    ```
-
-3.  **Set Environment Variables**:
-    Configure the backend to point to your LLM / Vectorstore endpoint:
-    ```bash
-    export VECTORSTORE_URL="http://your-llm-gateway"
-    ```
-
-4.  **Start the Backend**:
-    Run the server in development mode (using Morbo for auto-reload):
-    ```bash
-    morbo app.pl
-    ```
-
-5.  **Run the Frontend**:
-    Open `http://localhost:3000/Frontend/index.html` in your browser.
-
----
-
-## API Specification
-
-### Text Analysis Endpoint
-
-*   **Route**: `POST /DBB/analyze_text`
-*   **Headers**: `Content-Type: application/json`
-*   **Request Payload**:
-    ```json
-    {
-      "text": "This is some narrative text. It has a mispelled word.",
-      "run_id": 48
-    }
-    ```
-*   **Response Payload**:
-    ```json
-    {
-      "paragraphs": [
-        {
-          "paragraph_index": 0,
-          "text": "This is some narrative text. It has a mispelled word.",
-          "alerts": [
-            {
-              "id": "alert_0_0",
-              "category": "spelling",
-              "title": "Spelling Correction",
-              "original_text": "mispelled",
-              "suggested_text": "misspelled",
-              "offset": 38,
-              "length": 9,
-              "explanation": "The word is spelled with double 's'."
-            }
-          ]
-        }
-      ]
-    }
-    ```
+* **Ollama (Local)**: Requires your local endpoint URL (Default: `http://localhost:11434/api/generate`) and target model identifier (e.g., `llama3` or `gemma`).
+* **Groq API**: Requires your Groq API key and the desired model identifier (e.g., `llama3-8b-8192`).
+* **Google Gemini**: Requires your Google Gemini API key; uses `gemini-2.0-flash` by default.
+* **OpenRouter**: Accesses various cloud LLM backends using your OpenRouter API key and specific model identifier.
 
 ---
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the terms of the MIT License. See the `LICENSE` file for more details.
