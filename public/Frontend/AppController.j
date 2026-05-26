@@ -1,10 +1,6 @@
 @import <AppKit/AppKit.j>
 @import <Foundation/CPObject.j>
 
-// Importieren der Cup-Bibliotheken
-@import <Cup/Cup.j>
-@import <Cup/CupByteCountTransformer.j>
-
 // Falls das Backend auf einem anderen Port läuft, hier die URL eintragen (z. B. @"http://localhost:3039")
 var BackendBaseURL = @"";
 
@@ -151,9 +147,6 @@ var BackendBaseURL = @"";
     
     CPMutableArray      _chatMessages; 
     CPMutableArray      _summaryRows;     
-
-    // Cup Upload Instanz
-    Cup                 _cuploader;
 }
 
 - (void)applicationDidFinishLaunching:(CPNotification)aNotification
@@ -259,11 +252,29 @@ var BackendBaseURL = @"";
     [leftContainer addSubview:panelHeader];
 
     _uploadFileButton = [[UploadDropButton alloc] initWithFrame:CGRectMake(15, 15, leftWidth - 30, 40)];
-    [_uploadFileButton setTitle:@"Datei hochladen"];
+    [_uploadFileButton setTitle:@"Datei hochladen (oder Drag & Drop)"];
     [_uploadFileButton setAutoresizingMask:CPViewWidthSizable];
     [_uploadFileButton setTarget:self];
     [_uploadFileButton setAction:@selector(triggerNativeUploadAction:)];
     [panelHeader addSubview:_uploadFileButton];
+
+    // Natives Drag & Drop auf dem Button-Element einrichten
+    var selfRef = self;
+    setTimeout(function() {
+        var domElement = [_uploadFileButton _DOMElement];
+        if (domElement) {
+            domElement.addEventListener("dragover", function(e) {
+                e.preventDefault();
+            });
+            domElement.addEventListener("drop", function(e) {
+                e.preventDefault();
+                var files = e.dataTransfer.files;
+                if (files && files.length > 0) {
+                    [selfRef uploadFile:files[0]];
+                }
+            });
+        }
+    }, 200);
 
     _statusLabel = [[CPTextField alloc] initWithFrame:CGRectMake(15, 65, leftWidth - 30, 35)];
     [_statusLabel setStringValue:@"Warte auf Datei-Upload."];
@@ -361,37 +372,8 @@ var BackendBaseURL = @"";
     [splitView addSubview:rightContainer];
     [contentView addSubview:splitView];
 
-    // --- CUP INITIALISIERUNG ---
-    _cuploader = [[Cup alloc] initWithURL:[self uploadURL]];
-    [_cuploader setRemoveCompletedFiles:YES];
-    [_cuploader setAutoUpload:YES];
-    [_cuploader setDelegate:self];
-
-    // Drop Targets für Drag & Drop über Cup registrieren
-    [_cuploader setDropTarget:_uploadFileButton];
-
-    // Binding für die dynamische URL-Aktualisierung
-    [_cuploader bind:@"URL" toObject:self withKeyPath:@"uploadURL" options:nil];
-
     [_mainWindow orderFront:self];
     [self initializeNewSessionOnClient];
-}
-
-// --- DYNAMISCHER UPLOAD URL GETTER ---
-- (CPString)uploadURL
-{
-    var configDict = [self currentLLMConfigPayload];
-    var configJSObject = {};
-    var keys = [configDict allKeys];
-    for (var i = 0; i < [keys count]; i++) {
-        var k = [keys objectAtIndex:i];
-        configJSObject[k] = [configDict objectForKey:k];
-    }
-    var configJSON = JSON.stringify(configJSObject);
-
-    return [self backendPath:@"/api/upload"] + 
-           "?session_id=" + encodeURIComponent(_currentSessionId || @"") + 
-           "&llm_config=" + encodeURIComponent(configJSON);
 }
 
 // --- TABLE VIEW DATA SOURCE METHODS (GRID) ---
@@ -603,9 +585,6 @@ var BackendBaseURL = @"";
 
     [self closeSettingsSheet:sender];
     [_statusLabel setStringValue:@"Einstellungen gespeichert."];
-
-    // URL aktualisieren nach Einstellungsänderung
-    [_cuploader setURL:[self uploadURL]];
 }
 
 // --- CLIENT-SEITIGES MODEL FÜR PAYLOADS ---
@@ -662,9 +641,6 @@ var BackendBaseURL = @"";
     [_chatDocumentView setFrameSize:CGSizeMake(CGRectGetWidth([_chatScrollView bounds]) - 20, CGRectGetHeight([_chatScrollView bounds]))];
     
     [self appendMessageWithSender:@"bot" text:@"Sitzung gestartet. Bitte laden Sie eine Datei hoch." isError:NO downloads:nil saveToHistory:YES];
-
-    // URL an den neuen Session Key anpassen
-    [_cuploader setURL:[self uploadURL]];
 }
 
 - (void)newSessionAction:(id)sender
@@ -672,63 +648,81 @@ var BackendBaseURL = @"";
     [self initializeNewSessionOnClient];
 }
 
+// --- DIREKTER NATIVEN DATEI-UPLOAD ---
+
 - (void)triggerNativeUploadAction:(id)sender
 {
-    // Upload-URL vor Absenden aktualisieren
-    [_cuploader setURL:[self uploadURL]];
-
-    // Native Cups Upload-Auswahl aufrufen (beseitigt submit-Fehler auf null)
-    [_cuploader addFiles:sender];
+    var selfRef = self;
+    var input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.csv,.tsv,.txt,.xlsx,.xls';
+    input.onchange = function(event) {
+        var files = event.target.files;
+        if (files && files.length > 0) {
+            [selfRef uploadFile:files[0]];
+        }
+    };
+    input.click();
 }
 
-// --- CUP DELEGATE METHODS ---
-
-- (void)cup:(Cup)aCup uploadDidStartForFile:(CupFile)aFile
+- (void)uploadFile:(id)jsFile
 {
     [_progressBar setHidden:NO];
     [_progressBar startAnimation:self];
     [_uploadFileButton setEnabled:NO];
-    [_statusLabel setStringValue:@"Sende Datei via Cup..."];
-}
+    [_statusLabel setStringValue:@"Übertrage Datei..."];
 
-// Implementierung für die 3-Argument-Signatur
-- (void)cup:(Cup)aCup uploadDidCompleteForFile:(CupFile)aFile response:(CPString)aResponse
-{
-    [self processCompletedUploadWithResponse:aResponse];
-}
-
-// Implementierung für die alternative 2-Argument-Signatur (zur Abwärtskompatibilität)
-- (void)cup:(Cup)aCup uploadDidCompleteForFile:(CupFile)aFile
-{
-    var responseText = nil;
-    if ([aFile respondsToSelector:@selector(response)]) {
-        responseText = [aFile response];
+    var selfRef = self;
+    
+    // LLM Payload generieren
+    var configDict = [self currentLLMConfigPayload];
+    var configJSObject = {};
+    var keys = [configDict allKeys];
+    for (var i = 0; i < [keys count]; i++) {
+        var k = [keys objectAtIndex:i];
+        configJSObject[k] = [configDict objectForKey:k];
     }
-    [self processCompletedUploadWithResponse:responseText];
+    var configJSON = JSON.stringify(configJSObject);
+
+    // Multi-Part Form Data manuell bauen
+    var formData = new FormData();
+    formData.append('files[]', jsFile);
+    formData.append('session_id', _currentSessionId || @"");
+    formData.append('llm_config', configJSON);
+
+    var uploadUrl = [self backendPath:@"/api/upload"];
+
+    fetch(uploadUrl, {
+        method: 'POST',
+        body: formData
+    })
+    .then(function(response) {
+        if (!response.ok) {
+            throw new Error("HTTP-Status-Fehler: " + response.status);
+        }
+        return response.json();
+    })
+    .then(function(data) {
+        [selfRef processCompletedUploadWithData:data];
+    })
+    .catch(function(error) {
+        [selfRef processFailedUploadWithError:error.message];
+    });
 }
 
-- (void)processCompletedUploadWithResponse:(CPString)responseText
+- (void)processCompletedUploadWithData:(id)data
 {
     [_progressBar stopAnimation:self];
     [_progressBar setHidden:YES];
     [_uploadFileButton setEnabled:YES];
 
+    if (!data || data.error) {
+        var err = (data && data.error) ? data.error : @"Ein unbekannter Verarbeitungsfehler ist aufgetreten.";
+        [self processFailedUploadWithError:err];
+        return;
+    }
+
     try {
-        var data = JSON.parse(responseText);
-
-        if (data.error) {
-            [_summaryRows removeAllObjects];
-            [_summaryTableView reloadData];
-            [_statusLabel setStringValue:@"Upload fehlgeschlagen."];
-            [self appendMessageWithSender:@"bot" text:@"Fehler beim Laden: " + data.error isError:YES downloads:nil saveToHistory:YES];
-            return;
-        }
-
-        if (data.session_id) {
-            _currentSessionId = data.session_id;
-            [_cuploader setURL:[self uploadURL]];
-        }
-
         // Struktur-Daten parsen und das linke Grid befüllen
         [self parseSummaryText:(data.summary || "")];
 
@@ -742,12 +736,11 @@ var BackendBaseURL = @"";
         [self appendMessageWithSender:@"bot" text:@"Datei erfolgreich verarbeitet. Analyse-Sitzung ist bereit." isError:NO downloads:nil saveToHistory:YES];
     } catch (e) {
         [_statusLabel setStringValue:@"Fehler bei Serverantwort."];
-        debugger
         [self appendMessageWithSender:@"bot" text:@"Kommunikation zum Server unvollständig." isError:YES downloads:nil saveToHistory:YES];
     }
 }
 
-- (void)cup:(Cup)aCup uploadDidFailForFile:(CupFile)aFile error:(CPString)anError
+- (void)processFailedUploadWithError:(CPString)anError
 {
     [_progressBar stopAnimation:self];
     [_progressBar setHidden:YES];

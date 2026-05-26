@@ -56,6 +56,7 @@ helper call_cloud_llm => sub ($c, $prompt, $config) {
                my $res = eval { decode_json($tx->result->body) };
                $promise->resolve($res->{response} // '');
            } else {
+               warn $tx->result->message;
                $promise->reject("Ollama Fehler: " . $tx->result->message);
            }
        });
@@ -138,7 +139,7 @@ File Preview:
 $preview
 
 Write a robust R script using base R (such as read.csv, read.csv2, read.delim) or readr (read_delim) to load this file into a data frame named 'df'.
-Make sure to explicitly specify the correct 'sep' (separator) and 'dec' (decimal) parameters matching the preview analysis to avoid parser failures like "more columns than column names" / "mehr Spalten als Spaltennamen". 
+Make sure to explicitly specify the correct 'sep' (separator) and 'dec' (decimal) parameters matching the preview analysis to avoid parser failures like "more columns than column names" / "mehr Spalten als Spaltennamen". Please make sure to load tidyverse if you plan to use %>%
 
 If the file extension indicates an Excel file (.xlsx or .xls), use 'readxl::read_excel'.
 
@@ -251,8 +252,8 @@ post '/api/upload' => sub ($c) {
    return $c->render(json => {error => 'No file uploaded'}) unless $upload;
    my $session_id = $c->req->param('session_id');
    $session_id =~ s/[^a-zA-Z0-9_\-]//g if defined $session_id;
-   
-   if (!$session_id) {
+
+    if (!$session_id) {
        $session_id = 'session_' . time() . '_' . int(rand(1000));
    }
 
@@ -307,7 +308,7 @@ post '/api/upload' => sub ($c) {
 
        $session->{summary} = $summary;
        $c->save_session_data($session_id, $session);
-
+warn $session_id;
        $c->render(json => {
            session_id => $session_id,
            summary    => $summary,
