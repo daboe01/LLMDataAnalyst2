@@ -8,20 +8,23 @@ The system runs generated R code in isolated, session-specific directories, capt
 
 ## System Architecture
 
-The application is structured into two primary components:
+The application is structured into the following primary components:
 
 ```
-┌─────────────────────────────────┐          JSON Requests         ┌──────────────────────────────┐
-│       Cappuccino Frontend       │ ─────────────────────────────> │       Perl Mojolicious       │
-│    (Desktop-class Web UI)       │ <───────────────────────────── │           Backend            │
-└─────────────────────────────────┘          Plots / Data          └──────────────────────────────┘
-                                                                                  │
-                                                                                  │ (Statistics::R)
-                                                                                  ▼
-                                                                   ┌──────────────────────────────┐
-                                                                   │        Local R Engine        │
-                                                                   │   (Execution & Output Gen)   │
-                                                                   └──────────────────────────────┘
+                                  JSON Requests
+ ┌─────────────────────┐  ────────────────────────>  ┌─────────────────────┐
+ │ Cappuccino Frontend │                             │   Perl Mojolicious  │
+ │ (Desktop-class Web) │  <────────────────────────  │       Backend       │
+ └─────────────────────┘         Plots / Data        └─────────────────────┘
+                                                        │               │
+                                          Prompts /     │               │ R-Code
+                                          R-Code        │               │ Execution
+                                                        ▼               ▼
+                                                 ┌─────────────┐ ┌──────────────┐
+                                                 │   LLM API   │ │Local R Engine│
+                                                 │  (Cloud or  │ │ (R-Stats &  │
+                                                 │   Local)    │ │ Plot Gen)  │
+                                                 └─────────────┘ └──────────────┘
 ```
 
 1. **Frontend (Objective-J / Cappuccino)**:
