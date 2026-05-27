@@ -1010,13 +1010,16 @@ var BackendBaseURL = @"";
                                                   isUser:isUserMsg 
                                                fillColor:fillColor];
 
-    var textLabel = [[CPTextField alloc] initWithFrame:CGRectMake(15, 10, docWidth - 30, textHeight)];
-    [textLabel setStringValue:text];
-    [textLabel setTextColor:[CPColor blackColor]];
-    [textLabel setFont:[CPFont systemFontOfSize:11.0]];
-    [textLabel setLineBreakMode:CPLineBreakByWordWrapping];
-    [textLabel setAutoresizingMask:CPViewWidthSizable];
-    [cardBox addSubview:textLabel];
+    // CPTextView wird verwendet, damit der Text selektierbar ist
+    var textView = [[CPTextView alloc] initWithFrame:CGRectMake(15, 10, docWidth - 30, textHeight)];
+    [textView setString:text];
+    [textView setTextColor:[CPColor blackColor]];
+    [textView setFont:[CPFont systemFontOfSize:11.0]];
+    [textView setEditable:NO];
+    [textView setSelectable:YES];
+    [textView setBackgroundColor:[CPColor clearColor]];
+    [textView setAutoresizingMask:CPViewWidthSizable];
+    [cardBox addSubview:textView];
 
     if (downloads && [downloads count] > 0) {
         var runningY = textHeight + 20;
