@@ -258,16 +258,62 @@ var BackendBaseURL = @"";
     [_uploadFileButton setAction:@selector(triggerNativeUploadAction:)];
     [panelHeader addSubview:_uploadFileButton];
 
-    // Natives Drag & Drop auf dem Button-Element einrichten
+// Natives Drag & Drop auf dem Button-Element einrichten mit verbessertem Feedback
     var selfRef = self;
     setTimeout(function() {
-        var domElement = [_uploadFileButton _DOMElement];
+        var domElement = _uploadFileButton._DOMElement;
         if (domElement) {
+            // Deaktiviert Pointer-Events auf Kindelementen, um Flackern zu verhindern
+            var disableChildPointerEvents = function() {
+                var children = domElement.getElementsByTagName('*');
+                for (var i = 0; i < children.length; i++) {
+                    children[i].style.pointerEvents = "none";
+                }
+            };
+            
+            disableChildPointerEvents();
+
+            var dragCounter = 0;
+
+            domElement.addEventListener("dragenter", function(e) {
+                e.preventDefault();
+                dragCounter++;
+                
+                if (dragCounter === 1) {
+                    disableChildPointerEvents(); // Erneut anwenden, falls das Layout neu gezeichnet wurde
+                    [_uploadFileButton setTitle:@"Datei hier ablegen!"];
+                    domElement.style.outline = "2px dashed #0076FF";
+                    domElement.style.outlineOffset = "-3px";
+                    domElement.style.backgroundColor = "#E6F0FF";
+                }
+            });
+
             domElement.addEventListener("dragover", function(e) {
                 e.preventDefault();
+                e.dataTransfer.dropEffect = "copy";
             });
+
+            domElement.addEventListener("dragleave", function(e) {
+                e.preventDefault();
+                dragCounter--;
+                
+                if (dragCounter <= 0) {
+                    dragCounter = 0;
+                    [_uploadFileButton setTitle:@"Datei hochladen (oder Drag & Drop)"];
+                    domElement.style.outline = "";
+                    domElement.style.outlineOffset = "";
+                    domElement.style.backgroundColor = "";
+                }
+            });
+
             domElement.addEventListener("drop", function(e) {
                 e.preventDefault();
+                dragCounter = 0;
+                [_uploadFileButton setTitle:@"Datei hochladen (oder Drag & Drop)"];
+                domElement.style.outline = "";
+                domElement.style.outlineOffset = "";
+                domElement.style.backgroundColor = "";
+                
                 var files = e.dataTransfer.files;
                 if (files && files.length > 0) {
                     [selfRef uploadFile:files[0]];
