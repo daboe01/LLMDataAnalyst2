@@ -1,7 +1,7 @@
 @import <AppKit/AppKit.j>
 @import <Foundation/CPObject.j>
 
-// Falls das Backend auf einem anderen Port läuft, hier die URL eintragen (z. B. @"http://localhost:3039")
+// Falls das Backend auf einem anderen Port läuft, hier die URL eintragen (z. B. @"http://localhost:3036")
 var BackendBaseURL = @"";
 
 // --- SUBCLASS: SPEECH BUBBLE VIEW ---
@@ -258,7 +258,7 @@ var BackendBaseURL = @"";
     [_uploadFileButton setAction:@selector(triggerNativeUploadAction:)];
     [panelHeader addSubview:_uploadFileButton];
 
-// Natives Drag & Drop auf dem Button-Element einrichten mit verbessertem Feedback
+    // Natives Drag & Drop auf dem Button-Element einrichten mit verbessertem Feedback
     var selfRef = self;
     setTimeout(function() {
         var domElement = _uploadFileButton._DOMElement;
@@ -686,7 +686,7 @@ var BackendBaseURL = @"";
     [[_chatDocumentView subviews] makeObjectsPerformSelector:@selector(removeFromSuperview)];
     [_chatDocumentView setFrameSize:CGSizeMake(CGRectGetWidth([_chatScrollView bounds]) - 20, CGRectGetHeight([_chatScrollView bounds]))];
     
-    [self appendMessageWithSender:@"bot" text:@"Sitzung gestartet. Bitte laden Sie eine Datei hoch." isError:NO downloads:nil saveToHistory:YES];
+    [self appendMessageWithSender:@"bot" text:@"Sitzung gestartet. Bitte laden Sie eine Datei hoch." isError:NO downloads:nil thumbnails:nil saveToHistory:YES];
 }
 
 - (void)newSessionAction:(id)sender
@@ -779,10 +779,10 @@ var BackendBaseURL = @"";
         [_downloadScriptButton setEnabled:YES];
         [_statusLabel setStringValue:@"Datensatz geladen."];
 
-        [self appendMessageWithSender:@"bot" text:@"Datei erfolgreich verarbeitet. Analyse-Sitzung ist bereit." isError:NO downloads:nil saveToHistory:YES];
+        [self appendMessageWithSender:@"bot" text:@"Datei erfolgreich verarbeitet. Analyse-Sitzung ist bereit." isError:NO downloads:nil thumbnails:nil saveToHistory:YES];
     } catch (e) {
         [_statusLabel setStringValue:@"Fehler bei Serverantwort."];
-        [self appendMessageWithSender:@"bot" text:@"Kommunikation zum Server unvollständig." isError:YES downloads:nil saveToHistory:YES];
+        [self appendMessageWithSender:@"bot" text:@"Kommunikation zum Server unvollständig." isError:YES downloads:nil thumbnails:nil saveToHistory:YES];
     }
 }
 
@@ -792,7 +792,7 @@ var BackendBaseURL = @"";
     [_progressBar setHidden:YES];
     [_uploadFileButton setEnabled:YES];
     [_statusLabel setStringValue:@"Netzwerk-Übertragungsfehler."];
-    [self appendMessageWithSender:@"bot" text:@"Kommunikation zum Server fehlgeschlagen: " + anError isError:YES downloads:nil saveToHistory:YES];
+    [self appendMessageWithSender:@"bot" text:@"Kommunikation zum Server fehlgeschlagen: " + anError isError:YES downloads:nil thumbnails:nil saveToHistory:YES];
 }
 
 // --- CHAT-STEUERUNG ---
@@ -817,7 +817,7 @@ var BackendBaseURL = @"";
     [progressBar startAnimation:selfRef];
     [statusLabel setStringValue:@"Anfrage wird verarbeitet..."];
 
-    [self appendMessageWithSender:@"user" text:prompt isError:NO downloads:nil saveToHistory:YES];
+    [self appendMessageWithSender:@"user" text:prompt isError:NO downloads:nil thumbnails:nil saveToHistory:YES];
 
     var chatUrl = [self backendPath:@"/api/chat"];
     
@@ -859,13 +859,17 @@ var BackendBaseURL = @"";
         if (data.error || data.success === false) {
             var errText = data.error || "Unerwarteter Fehler im Backend.";
             if (data.details) errText += "\n\nDetails: " + data.details;
-            [selfRef appendMessageWithSender:@"bot" text:@"Fehler:\n" + errText isError:YES downloads:nil saveToHistory:YES];
+            [selfRef appendMessageWithSender:@"bot" text:@"Fehler:\n" + errText isError:YES downloads:nil thumbnails:nil saveToHistory:YES];
         } else {
             var msg = "Code erfolgreich ausgeführt (" + data.attempts + " Versuche).";
             if (data.output && (!data.downloads || data.downloads.length === 0)) {
                 msg += "\n\nKonsole:\n" + data.output;
             }
-            [selfRef appendMessageWithSender:@"bot" text:msg isError:NO downloads:data.downloads saveToHistory:YES];
+            
+            var cpDownloads = data.downloads ? [CPArray arrayWithArray:data.downloads] : nil;
+            var cpThumbnails = data.thumbnails ? [CPArray arrayWithArray:data.thumbnails] : nil;
+            
+            [selfRef appendMessageWithSender:@"bot" text:msg isError:NO downloads:cpDownloads thumbnails:cpThumbnails saveToHistory:YES];
         }
     })
     .catch(function(error) {
@@ -875,7 +879,7 @@ var BackendBaseURL = @"";
         [chatInputField becomeFirstResponder];
         [chatSendButton setEnabled:YES];
         [statusLabel setStringValue:@"Verarbeitungsfehler."];
-        [selfRef appendMessageWithSender:@"bot" text:@"Fehler bei der Kommunikation: " + error.message isError:YES downloads:nil saveToHistory:YES];
+        [selfRef appendMessageWithSender:@"bot" text:@"Fehler bei der Kommunikation: " + error.message isError:YES downloads:nil thumbnails:nil saveToHistory:YES];
     });
 }
 
@@ -937,7 +941,8 @@ var BackendBaseURL = @"";
             "sender": msg.sender,
             "text": msg.text,
             "isError": msg.isError,
-            "downloads": msg.downloads ? [msg.downloads array] : null
+            "downloads": msg.downloads ? (typeof msg.downloads.array === "function" ? [msg.downloads array] : msg.downloads) : null,
+            "thumbnails": msg.thumbnails ? (typeof msg.thumbnails.array === "function" ? [msg.thumbnails array] : msg.thumbnails) : null
         };
         serializedArray.push(jsObj);
     }
@@ -995,10 +1000,15 @@ var BackendBaseURL = @"";
         if (msg.downloads && msg.downloads.length > 0) {
             cpDownloads = [CPArray arrayWithArray:msg.downloads];
         }
+        var cpThumbnails = nil;
+        if (msg.thumbnails && msg.thumbnails.length > 0) {
+            cpThumbnails = [CPArray arrayWithArray:msg.thumbnails];
+        }
         [self appendMessageWithSender:msg.sender 
                                  text:msg.text 
                               isError:msg.isError 
                             downloads:cpDownloads 
+                           thumbnails:cpThumbnails
                         saveToHistory:YES];
     }
     [_statusLabel setStringValue:@"Verlauf erfolgreich geladen."];
@@ -1006,14 +1016,15 @@ var BackendBaseURL = @"";
 
 // --- DYNAMISCHER CHAT-FEED ---
 
-- (void)appendMessageWithSender:(CPString)sender text:(CPString)text isError:(BOOL)isError downloads:(CPArray)downloads saveToHistory:(BOOL)save
+- (void)appendMessageWithSender:(CPString)sender text:(CPString)text isError:(BOOL)isError downloads:(CPArray)downloads thumbnails:(CPArray)thumbnails saveToHistory:(BOOL)save
 {
     if (save) {
         var historyItem = {
             "sender": sender,
             "text": text,
             "isError": isError,
-            "downloads": downloads ? [downloads copy] : nil
+            "downloads": downloads ? [downloads copy] : nil,
+            "thumbnails": thumbnails ? [thumbnails copy] : nil
         };
         [_chatMessages addObject:historyItem];
     }
@@ -1025,23 +1036,74 @@ var BackendBaseURL = @"";
     var textHeight = Math.max(25, lines * 18);
     var cardHeight = textHeight + 40;
     
-    var hasImages = NO;
-    var imageCount = 0;
-    if (downloads && [downloads count] > 0) {
-        for (var i = 0; i < [downloads count]; i++) {
-            var fileUrl = downloads[i];
-            if ([self isImagePath:fileUrl]) {
-                hasImages = YES;
-                imageCount++;
-            } else {
-                cardHeight += 45;
+    var imagesToRender = []; // Array of { thumbUrl: string, downloadUrl: string, filename: string }
+    var filesToRender = [];  // Array of { downloadUrl: string, filename: string }
+
+    var pairedDownloads = {};
+
+    var getBaseName = function(path) {
+        var filename = [path lastPathComponent] || "";
+        var dotIdx = filename.lastIndexOf('.');
+        return dotIdx === -1 ? filename : filename.substring(0, dotIdx);
+    };
+
+    // 1. Zuordnen von Thumbnails zu entsprechenden hochauflösenden PDF Downloads
+    if (thumbnails && [thumbnails count] > 0) {
+        for (var i = 0; i < [thumbnails count]; i++) {
+            var thumbUrl = [thumbnails objectAtIndex:i];
+            var baseName = getBaseName(thumbUrl);
+            var matchedDownloadUrl = thumbUrl; // Fallback, falls kein PDF vorhanden ist
+
+            if (downloads && [downloads count] > 0) {
+                for (var j = 0; j < [downloads count]; j++) {
+                    var dlUrl = [downloads objectAtIndex:j];
+                    if (getBaseName(dlUrl) === baseName) {
+                        matchedDownloadUrl = dlUrl;
+                        pairedDownloads[dlUrl] = true;
+                        break;
+                    }
+                }
+            }
+
+            imagesToRender.push({
+                thumbUrl: thumbUrl,
+                downloadUrl: matchedDownloadUrl,
+                filename: [thumbUrl lastPathComponent]
+            });
+        }
+    } else {
+        // Fallback für Sessions ohne Thumbnails, bei denen direkt Bilddaten geliefert wurden
+        if (downloads && [downloads count] > 0) {
+            for (var i = 0; i < [downloads count]; i++) {
+                var dlUrl = [downloads objectAtIndex:i];
+                if ([self isImagePath:dlUrl]) {
+                    imagesToRender.push({
+                        thumbUrl: dlUrl,
+                        downloadUrl: dlUrl,
+                        filename: [dlUrl lastPathComponent]
+                    });
+                    pairedDownloads[dlUrl] = true;
+                }
             }
         }
     }
-    
-    if (hasImages) {
-        cardHeight += (imageCount * 280);
+
+    // 2. Erfassen aller übrigen Dateien (z.B. CSV-Exporte), die keinem Thumbnail zugeordnet wurden
+    if (downloads && [downloads count] > 0) {
+        for (var i = 0; i < [downloads count]; i++) {
+            var dlUrl = [downloads objectAtIndex:i];
+            if (!pairedDownloads[dlUrl] && ![self isImagePath:dlUrl]) {
+                filesToRender.push({
+                    downloadUrl: dlUrl,
+                    filename: [dlUrl lastPathComponent]
+                });
+            }
+        }
     }
+
+    // Höhenberechnung für die Renderblöcke
+    cardHeight += (imagesToRender.length * 287);
+    cardHeight += (filesToRender.length * 45);
 
     var isUserMsg = [sender isEqualToString:@"user"];
     var fillColor = [CPColor colorWithWhite:0.96 alpha:1.0]; // System (LHS)
@@ -1067,51 +1129,60 @@ var BackendBaseURL = @"";
     [textView setAutoresizingMask:CPViewWidthSizable];
     [cardBox addSubview:textView];
 
-    if (downloads && [downloads count] > 0) {
+    if (imagesToRender.length > 0 || filesToRender.length > 0) {
         var runningY = textHeight + 20;
         
-        for (var i = 0; i < [downloads count]; i++) {
-            var fileUrl = [downloads objectAtIndex:i];
-            var resolvedUrl = [self backendPath:fileUrl];
-            var filename = [fileUrl lastPathComponent] || "Datei";
+        // Render block für Bilder (PNG Thumbnail + PDF Download-Button)
+        for (var i = 0; i < imagesToRender.length; i++) {
+            var imgItem = imagesToRender[i];
+            var resolvedThumbUrl = [self backendPath:imgItem.thumbUrl];
+            var resolvedDownloadUrl = [self backendPath:imgItem.downloadUrl];
+            var filename = imgItem.filename;
 
-            if ([self isImagePath:fileUrl]) {
-                var timestamp = new Date().getTime();
-                var bustUrl = resolvedUrl + "?t=" + timestamp;
+            var timestamp = new Date().getTime();
+            var bustUrl = resolvedThumbUrl + "?t=" + timestamp;
 
-                var imgLabel = [[CPTextField alloc] initWithFrame:CGRectMake(15, runningY, docWidth - 30, 20)];
-                [imgLabel setStringValue:filename + ":"];
-                [imgLabel setTextColor:[CPColor darkGrayColor]];
-                [imgLabel setFont:[CPFont boldSystemFontOfSize:11.0]];
-                [cardBox addSubview:imgLabel];
-                runningY += 22;
+            var imgLabel = [[CPTextField alloc] initWithFrame:CGRectMake(15, runningY, docWidth - 30, 20)];
+            [imgLabel setStringValue:filename + ":"];
+            [imgLabel setTextColor:[CPColor darkGrayColor]];
+            [imgLabel setFont:[CPFont boldSystemFontOfSize:11.0]];
+            [cardBox addSubview:imgLabel];
+            runningY += 22;
 
-                var cpImage = [[CPImage alloc] initWithContentsOfFile:bustUrl];
-                var imageView = [[CPImageView alloc] initWithFrame:CGRectMake(15, runningY, docWidth - 30, 220)];
-                [imageView setImage:cpImage];
-                [imageView setImageScaling:CPScaleProportionally];
-                [imageView setAutoresizingMask:CPViewWidthSizable];
-                [imageView setBackgroundColor:[CPColor whiteColor]];
-                [cardBox addSubview:imageView];
-                runningY += 230;
+            var cpImage = [[CPImage alloc] initWithContentsOfFile:bustUrl];
+            var imageView = [[CPImageView alloc] initWithFrame:CGRectMake(15, runningY, docWidth - 30, 220)];
+            [imageView setImage:cpImage];
+            [imageView setImageScaling:CPScaleProportionally];
+            [imageView setAutoresizingMask:CPViewWidthSizable];
+            [imageView setBackgroundColor:[CPColor whiteColor]];
+            [cardBox addSubview:imageView];
+            runningY += 230;
 
-                var dlPlotButton = [[CPButton alloc] initWithFrame:CGRectMake(15, runningY, 160, 24)];
-                [dlPlotButton setTitle:@"Herunterladen"];
-                [dlPlotButton setTarget:self];
-                [dlPlotButton setAction:@selector(openResourceAction:)];
-                dlPlotButton._representedObject = resolvedUrl;
-                [cardBox addSubview:dlPlotButton];
-                runningY += 35;
-            } else {
-                var dlFileButton = [[CPButton alloc] initWithFrame:CGRectMake(15, runningY, docWidth - 30, 30)];
-                [dlFileButton setTitle:@"Datei herunterladen: " + filename];
-                [dlFileButton setTarget:self];
-                [dlFileButton setAction:@selector(openResourceAction:)];
-                [dlFileButton setAutoresizingMask:CPViewWidthSizable];
-                [cardBox addSubview:dlFileButton];
-                
-                runningY += 40;
-            }
+            var dlPlotButton = [[CPButton alloc] initWithFrame:CGRectMake(15, runningY, 180, 24)];
+            var isPdf = [[imgItem.downloadUrl lowercaseString] hasSuffix:@".pdf"];
+            [dlPlotButton setTitle:(isPdf ? @"PDF herunterladen" : @"Grafik herunterladen")];
+            [dlPlotButton setTarget:self];
+            [dlPlotButton setAction:@selector(openResourceAction:)];
+            dlPlotButton._representedObject = resolvedDownloadUrl;
+            [cardBox addSubview:dlPlotButton];
+            runningY += 35;
+        }
+
+        // Render block für andere Anhänge / CSV Exporte
+        for (var i = 0; i < filesToRender.length; i++) {
+            var fileItem = filesToRender[i];
+            var resolvedUrl = [self backendPath:fileItem.downloadUrl];
+            var filename = fileItem.filename;
+
+            var dlFileButton = [[CPButton alloc] initWithFrame:CGRectMake(15, runningY, docWidth - 30, 30)];
+            [dlFileButton setTitle:@"Datei herunterladen: " + filename];
+            [dlFileButton setTarget:self];
+            [dlFileButton setAction:@selector(openResourceAction:)];
+            [dlFileButton setAutoresizingMask:CPViewWidthSizable];
+            dlFileButton._representedObject = resolvedUrl;
+            [cardBox addSubview:dlFileButton];
+            
+            runningY += 40;
         }
     }
 

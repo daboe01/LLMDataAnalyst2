@@ -151,7 +151,7 @@ PROMPT
 sub prompt_for_modification ($user_input, $current_code, $summary) {
    return <<"PROMPT";
 You are a statistical data analysis assistant.
-Modify the existing R code to satisfy the user's request.
+Modify the existing R code to satisfy the user's request. Try to stay in the tidyverse if possible.
 User request: $user_input
 
 Current R code:
@@ -162,7 +162,9 @@ $summary
 
 Ensure that:
 1. All changes are based on the data frame named 'df'.
-2. Any plots or files generated are saved as static images (PNG) in the current directory.
+2. Any plots generated MUST be saved in BOTH of the following formats in the current directory, using the exact same base filename:
+   - A static PNG image (e.g., 'plot.png') for thumbnail rendering.
+   - A high-quality PDF document (e.g., 'plot.pdf') for publication-quality downloading.
 3. You return ONLY the complete modified R code. No explanations, no markdown blocks.
 PROMPT
 }
@@ -176,6 +178,7 @@ It resulted in this error message:
 $error_msg
 
 Fix the error, adjust the code, and return the corrected R code.
+Ensure that any plots generated are saved BOTH as a static PNG image (e.g., 'plot.png') and as a high-quality PDF document (e.g., 'plot.pdf') in the current directory, using the exact same base filename.
 Return ONLY valid R code. No commentary. No markdown blocks.
 PROMPT
 }
@@ -375,17 +378,27 @@ post '/api/chat' => sub ($c) {
        }
 
        opendir(my $dh, $session->{workdir});
-       # Filtert ausschliesslich exportierte Plots/Grafiken fuer die native View heraus
-       my @files = grep { !/^\./ && $_ ne $session->{filename} && $_ =~ /\.(?:png|jpe?g|gif|svg)$/i } readdir($dh);
+       my @all_files = readdir($dh);
        closedir($dh);
 
-       my @downloads = map { "/api/download/file/$session_id/$_" } @files;
+       # Filter thumbnail PNG / image formats for the native viewer preview
+       my @png_files = grep { !/^\./ && $_ ne $session->{filename} && $_ =~ /\.(?:png|jpe?g|gif|svg)$/i } @all_files;
+       
+       # Filter PDF files for high quality download
+       my @pdf_files = grep { !/^\./ && $_ ne $session->{filename} && $_ =~ /\.pdf$/i } @all_files;
+
+       my @thumbnails = map { "/api/download/file/$session_id/$_" } @png_files;
+       my @pdf_urls   = map { "/api/download/file/$session_id/$_" } @pdf_files;
+
+       # If PDF files were successfully generated, use them for 'downloads'. Otherwise fall back to PNGs.
+       my @downloads  = @pdf_urls ? @pdf_urls : @thumbnails;
 
        $c->render(json => {
-           success   => \1,
-           output    => $result->{out},
-           attempts  => $result->{attempts},
-           downloads => \@downloads
+           success    => \1,
+           output     => $result->{out},
+           attempts   => $result->{attempts},
+           downloads  => \@downloads,     # Primarily contains the PDF links
+           thumbnails => \@thumbnails     # Retains original PNG links for visual preview
        });
 
    })->catch(sub ($err) {
@@ -418,6 +431,16 @@ get '/api/download/file/:session_id/:filename' => [filename => qr /.+/] => sub (
 
    my $session = $c->load_session_data($session_id);
    return $c->reply->not_found unless $session;
+
+   # Backward compatibility fallback: If PNG is requested but '?pdf=1' is provided,
+   # swap file pointer to the PDF equivalent if it exists in the workspace.
+   if ($c->param('pdf') && $filename =~ /\.png$/i) {
+       my $pdf_filename = $filename;
+       $pdf_filename =~ s/\.png$/\.pdf/i;
+       if (-e "$session->{workdir}/$pdf_filename") {
+           $filename = $pdf_filename;
+       }
+   }
 
    my $filepath = "$session->{workdir}/$filename";
    return $c->reply->not_found unless -e $filepath;
