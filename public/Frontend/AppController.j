@@ -159,13 +159,13 @@ var BackendBaseURL = @"";
     var defaultSettings = [CPDictionary dictionaryWithObjects:[
         @"ollama",
         @"http://localhost:11434/api/generate",
-        @"llama3",
+        @"gemma4:e4b",
         @"",
-        @"llama3-8b-8192",
+        @"llama-3.1-8b-instant",
         @"",
-        @"gemini-2.0-flash",
+        @"gemini-3.1-flash-lite",
         @"",
-        @"google/gemini-2.0-flash-001"
+        @"google/gemini-3.1-flash-lite-preview"
     ] forKeys:[
         @"LLMServiceType",
         @"LLMOllamaEndpoint",
