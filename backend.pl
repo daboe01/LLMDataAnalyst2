@@ -132,46 +132,30 @@ helper call_chat_llm => sub ($c, $messages, $tools, $config) {
        });
 
    } elsif ($service eq 'gemini') {
-       my $sel_model = $model || 'gemini-2.0-flash';
-       my $url = "https://generativelanguage.googleapis.com/v1beta/models/${sel_model}:generateContent?key=${api_key}";
-       
-       my @gemini_contents;
-       for my $m (@$messages) {
-           my $role = $m->{role} eq 'user' ? 'user' : 'model';
-           push @gemini_contents, {
-               role  => $role,
-               parts => [{ text => $m->{content} }]
-           };
-       }
+       # Google Gemini REST API utilizing official OpenAI Compatibility
+       my $sel_model = $model || 'gemini-2.5-flash';
+       my $url = 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions';
 
-       my $payload = { contents => \@gemini_contents };
-       
-       if ($tools && @$tools) {
-           my @declarations = map { $_->{function} } @$tools;
-           $payload->{tools} = [{ functionDeclarations => \@declarations }];
-       }
+       my $payload = {
+           model       => $sel_model,
+           messages    => $messages,
+           temperature => 0.1
+       };
+       $payload->{tools} = $tools if $tools && @$tools;
 
-       $ua->post($url => json => $payload => sub ($ua, $tx) {
+       my $headers = {
+           'Authorization' => "Bearer $api_key",
+           'Content-Type'  => 'application/json'
+       };
+
+       $ua->post($url => $headers => json => $payload => sub ($ua, $tx) {
            if ($tx->result && $tx->result->is_success) {
                my $res = eval { decode_json($tx->result->body) };
-               my $part = $res->{candidates}[0]{content}{parts}[0];
-               
-               my @tool_calls;
-               if ($part->{functionCall}) {
-                   push @tool_calls, {
-                       id       => 'call_gemini_' . time(),
-                       type     => 'function',
-                       function => {
-                           name      => $part->{functionCall}{name},
-                           arguments => $part->{functionCall}{args}
-                       }
-                   };
-               }
-
+               my $choice = $res->{choices}[0]{message};
                $promise->resolve({
                    role       => 'assistant',
-                   content    => $part->{text} // '',
-                   tool_calls => \@tool_calls
+                   content    => $choice->{content} // '',
+                   tool_calls => $choice->{tool_calls} // []
                });
            } else {
                my $err_msg = $tx->error ? $tx->error->{message} : "Unknown Connection Error";
