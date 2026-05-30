@@ -1,3 +1,7 @@
+// AppController.j
+// Cappuccino Frontend for LLMDataAnalyst2
+// (c) 2026 by Daniel Böhringer
+
 @import <AppKit/AppKit.j>
 @import <Foundation/CPObject.j>
 
@@ -861,11 +865,11 @@ var BackendBaseURL = @"";
             if (data.details) errText += "\n\nDetails: " + data.details;
             [selfRef appendMessageWithSender:@"bot" text:@"Fehler:\n" + errText isError:YES downloads:nil thumbnails:nil saveToHistory:YES];
         } else {
-            var msg = "Code erfolgreich ausgeführt (" + data.attempts + " Versuche).";
-            if (data.output && (!data.downloads || data.downloads.length === 0)) {
-                msg += "\n\nKonsole:\n" + data.output;
+            // Text-Erklärung wird nur befüllt, wenn KEINE Abbildungen generiert wurden
+            var msg = "";
+            if (!data.downloads || data.downloads.length === 0) {
+                msg = data.output || "Code erfolgreich ausgeführt.";
             }
-            
             var cpDownloads = data.downloads ? [CPArray arrayWithArray:data.downloads] : nil;
             var cpThumbnails = data.thumbnails ? [CPArray arrayWithArray:data.thumbnails] : nil;
             
@@ -1032,9 +1036,25 @@ var BackendBaseURL = @"";
     // Breite des Dokuments abzüglich Scrollbar-Puffer (verhindert Abschneiden des rechten Rands)
     var docWidth = CGRectGetWidth([_chatScrollView bounds]) - 50;
     
-    var lines = Math.ceil(text.length / (docWidth / 7.5));
-    var textHeight = Math.max(25, lines * 18);
-    var cardHeight = textHeight + 40;
+    // 1. Text bereinigen (LaTeX-Entfernung)
+    var cleanedText = [self cleanMathNotation:text];
+
+    // 2. CPTextView erstellen und via sizeToFit die exakte Höhe berechnen lassen
+    var textView = [[CPTextView alloc] initWithFrame:CGRectMake(15, 10, docWidth - 30, 20)];
+    [textView setString:cleanedText];
+    [textView setTextColor:[CPColor blackColor]];
+    [textView setFont:[CPFont systemFontOfSize:11.0]];
+    [textView setEditable:NO];
+    [textView setSelectable:YES];
+    [textView setBackgroundColor:[CPColor clearColor]];
+    [textView setAutoresizingMask:CPViewWidthSizable];
+    
+    // Nutzt Cappuccinos LayoutManager, um die exakte Texthöhe zu ermitteln
+    [textView sizeToFit];
+    var textHeight = CGRectGetHeight([textView frame]);
+    
+    // 3. Dynamische Höhenanpassung der Bubble je nach Textvorhandensein
+    var cardHeight = (cleanedText.length > 0) ? (textHeight + 40) : 20;
     
     var imagesToRender = []; // Array of { thumbUrl: string, downloadUrl: string, filename: string }
     var filesToRender = [];  // Array of { downloadUrl: string, filename: string }
@@ -1047,12 +1067,12 @@ var BackendBaseURL = @"";
         return dotIdx === -1 ? filename : filename.substring(0, dotIdx);
     };
 
-    // 1. Zuordnen von Thumbnails zu entsprechenden hochauflösenden PDF Downloads
+    // Zuordnen von Thumbnails zu entsprechenden hochauflösenden PDF Downloads
     if (thumbnails && [thumbnails count] > 0) {
         for (var i = 0; i < [thumbnails count]; i++) {
             var thumbUrl = [thumbnails objectAtIndex:i];
             var baseName = getBaseName(thumbUrl);
-            var matchedDownloadUrl = thumbUrl; // Fallback, falls kein PDF vorhanden ist
+            var matchedDownloadUrl = thumbUrl;
 
             if (downloads && [downloads count] > 0) {
                 for (var j = 0; j < [downloads count]; j++) {
@@ -1072,7 +1092,6 @@ var BackendBaseURL = @"";
             });
         }
     } else {
-        // Fallback für Sessions ohne Thumbnails, bei denen direkt Bilddaten geliefert wurden
         if (downloads && [downloads count] > 0) {
             for (var i = 0; i < [downloads count]; i++) {
                 var dlUrl = [downloads objectAtIndex:i];
@@ -1088,7 +1107,7 @@ var BackendBaseURL = @"";
         }
     }
 
-    // 2. Erfassen aller übrigen Dateien (z.B. CSV-Exporte), die keinem Thumbnail zugeordnet wurden
+    // Erfassen aller übrigen Dateien (z.B. CSV-Exporte)
     if (downloads && [downloads count] > 0) {
         for (var i = 0; i < [downloads count]; i++) {
             var dlUrl = [downloads objectAtIndex:i];
@@ -1102,53 +1121,38 @@ var BackendBaseURL = @"";
     }
 
     // Höhenberechnung für die Renderblöcke
-    cardHeight += (imagesToRender.length * 287);
+    cardHeight += (imagesToRender.length * 265); // Reduziert, da Label wegfällt
     cardHeight += (filesToRender.length * 45);
 
     var isUserMsg = [sender isEqualToString:@"user"];
-    var fillColor = [CPColor colorWithWhite:0.96 alpha:1.0]; // System (LHS)
+    var fillColor = [CPColor colorWithWhite:0.96 alpha:1.0];
     if (isUserMsg) {
-        fillColor = [CPColor colorWithRed:0.90 green:0.93 blue:1.0 alpha:1.0]; // User (RHS)
+        fillColor = [CPColor colorWithRed:0.90 green:0.93 blue:1.0 alpha:1.0];
     } else if (isError) {
-        fillColor = [CPColor colorWithRed:1.0 green:0.90 blue:0.90 alpha:1.0]; // Fehler
+        fillColor = [CPColor colorWithRed:1.0 green:0.90 blue:0.90 alpha:1.0];
     }
 
-    // Erstellen der Box samt dem integrierten Dreiecks-Tail an der Unterseite (h + 10)
+    // Erstellen der Box samt dem integrierten Dreiecks-Tail an der Unterseite
     var cardBox = [[SpeechBubbleBox alloc] initWithFrame:CGRectMake(15, _currentChatY, docWidth, cardHeight + 10) 
                                                   isUser:isUserMsg 
                                                fillColor:fillColor];
 
-    // CPTextView wird verwendet, damit der Text selektierbar ist
-    var textView = [[CPTextView alloc] initWithFrame:CGRectMake(15, 10, docWidth - 30, textHeight)];
-    [textView setString:text];
-    [textView setTextColor:[CPColor blackColor]];
-    [textView setFont:[CPFont systemFontOfSize:11.0]];
-    [textView setEditable:NO];
-    [textView setSelectable:YES];
-    [textView setBackgroundColor:[CPColor clearColor]];
-    [textView setAutoresizingMask:CPViewWidthSizable];
     [cardBox addSubview:textView];
 
     if (imagesToRender.length > 0 || filesToRender.length > 0) {
-        var runningY = textHeight + 20;
+        // Reduziertes Offset, wenn kein Text vorhanden ist (bündiger Start)
+        var runningY = (cleanedText.length > 0) ? (textHeight + 20) : 15;
         
         // Render block für Bilder (PNG Thumbnail + PDF Download-Button)
         for (var i = 0; i < imagesToRender.length; i++) {
             var imgItem = imagesToRender[i];
             var resolvedThumbUrl = [self backendPath:imgItem.thumbUrl];
             var resolvedDownloadUrl = [self backendPath:imgItem.downloadUrl];
-            var filename = imgItem.filename;
 
             var timestamp = new Date().getTime();
             var bustUrl = resolvedThumbUrl + "?t=" + timestamp;
 
-            var imgLabel = [[CPTextField alloc] initWithFrame:CGRectMake(15, runningY, docWidth - 30, 20)];
-            [imgLabel setStringValue:filename + ":"];
-            [imgLabel setTextColor:[CPColor darkGrayColor]];
-            [imgLabel setFont:[CPFont boldSystemFontOfSize:11.0]];
-            [cardBox addSubview:imgLabel];
-            runningY += 22;
-
+            // HINWEIS: Das redundante "filename:"-Label wurde hier entfernt, um Überlappungen zu vermeiden.
             var cpImage = [[CPImage alloc] initWithContentsOfFile:bustUrl];
             var imageView = [[CPImageView alloc] initWithFrame:CGRectMake(15, runningY, docWidth - 30, 220)];
             [imageView setImage:cpImage];
@@ -1230,6 +1234,42 @@ var BackendBaseURL = @"";
            [lowercasePath hasSuffix:@".jpeg"] || 
            [lowercasePath hasSuffix:@".gif"] || 
            [lowercasePath hasSuffix:@".svg"];
+}
+
+- (CPString)cleanMathNotation:(CPString)rawText
+{
+    if (!rawText) return @"";
+    var t = rawText;
+    
+    // 1. LaTeX-Formelblöcke ($$ und $) auflösen
+    t = t.replace(/\$\$(.*?)\$\$/g, "$1");
+    t = t.replace(/\$(.*?)\$/g, " $1 ");
+    
+    // 2. LaTeX-Befehle durch saubere Unicode-Symbole ersetzen
+    t = t.replace(/\\times/g, " × ");
+    t = t.replace(/\\div/g, " ÷ ");
+    t = t.replace(/\\cdot/g, " · ");
+    t = t.replace(/\\pm/g, " ± ");
+    t = t.replace(/\\le/g, " ≤ ");
+    t = t.replace(/\\ge/g, " ≥ ");
+    t = t.replace(/\\neq/g, " ≠ ");
+    t = t.replace(/\\approx/g, " ≈ ");
+    t = t.replace(/\\infty/g, " ∞ ");
+    t = t.replace(/\\pi/g, " π ");
+    t = t.replace(/\\alpha/g, " α ");
+    t = t.replace(/\\beta/g, " β ");
+    t = t.replace(/\\mu/g, " μ ");
+    t = t.replace(/\\sigma/g, " σ ");
+    t = t.replace(/\\Delta/g, " Δ ");
+    
+    // Komplexe Brüche und Wurzeln vereinfachen
+    t = t.replace(/\\sqrt\{(.*?)\}/g, " √($1) ");
+    t = t.replace(/\\frac\{(.*?)\}\{(.*?)\}/g, " ($1 / $2) ");
+    
+    // Zeilenumbrüche vereinheitlichen
+    t = t.replace(/\\n/g, "\n");
+    
+    return t;
 }
 
 @end

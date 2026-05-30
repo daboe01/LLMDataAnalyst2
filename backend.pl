@@ -1,5 +1,5 @@
 #!/usr/bin/env perl
-# LLMDataAnalyst - Multi-Provider Backend
+# LLMDataAnalyst - Multi-Provider Backend mit nativem Tool Calling
 use Mojolicious::Lite -signatures;
 use Mojo::UserAgent;
 use Mojo::JSON qw(decode_json encode_json);
@@ -13,7 +13,7 @@ use Data::Dumper;
 
 no warnings 'uninitialized';
 
-my $ua = Mojo::UserAgent->new(request_timeout => 60, inactivity_timeout => 60);
+my $ua = Mojo::UserAgent->new(request_timeout => 90, inactivity_timeout => 90);
 $ua->max_connections(0);
 
 my %SESSIONS;
@@ -33,9 +33,36 @@ app->hook(before_dispatch => sub ($c) {
 });
 
 # ==========================================
-# HELPER: Dynamischer Cloud LLM Client
+# DEFINITION DER TOOLS (JSON SCHEMA)
 # ==========================================
-helper call_cloud_llm => sub ($c, $prompt, $config) {
+my $r_tool_schema = {
+    type     => 'function',
+    function => {
+        name        => 'execute_r_code',
+        description => 'Führt R-Statistik- und Mathematik-Code auf dem geladenen Datensatz aus. '
+                     . 'Der Datensatz ist bereits in einem Dataframe namens "df" geladen. '
+                     . 'Nutzen Sie dieses Tool für Berechnungen, statistische Tests (t-Test, ANOVA, Regression) '
+                     . 'oder zur Erstellung von Visualisierungen. Visualisierungen MÜSSEN im aktuellen Verzeichnis '
+                     . 'sowohl als PNG (z.B. "plot.png") als auch als PDF (z.B. "plot.pdf") unter demselben Namen gespeichert werden.',
+        parameters  => {
+            type       => 'object',
+            properties => {
+                code => {
+                    type        => 'string',
+                    description => 'Der vollständige und ausführbare R-Code.',
+                },
+            },
+            required => ['code'],
+        },
+    },
+};
+
+my @available_tools = ($r_tool_schema);
+
+# ==========================================
+# HELPER: Dynamischer Chat-Client (mit Tool Calling Support)
+# ==========================================
+helper call_chat_llm => sub ($c, $messages, $tools, $config) {
    my $service  = $config->{service}  // 'ollama';
    my $model    = $config->{model}    // '';
    my $api_key  = $config->{api_key}  // '';
@@ -44,147 +71,141 @@ helper call_cloud_llm => sub ($c, $prompt, $config) {
    my $promise = Mojo::Promise->new;
 
    if ($service eq 'ollama') {
-       # Ollama Integration (Lokal)
-       my $url = $endpoint || 'http://localhost:11434/api/generate';
+       my $url = $endpoint;
+       $url =~ s/generate/chat/;
+       if ($url eq '') {
+           $url = 'http://localhost:11434/api/chat';
+       }
+
        my $payload = {
-           model  => $model || 'llama3',
-           prompt => $prompt,
-           stream => \0
+           model    => $model || 'gpt-oss:20b',
+           messages => $messages,
+           stream   => \0
        };
+       $payload->{tools} = $tools if $tools && @$tools;
+
        $ua->post($url => json => $payload => sub ($ua, $tx) {
-           if ($tx->result->is_success) {
+           if ($tx->result && $tx->result->is_success) {
                my $res = eval { decode_json($tx->result->body) };
-               $promise->resolve($res->{response} // '');
+               my $msg = $res->{message} // { role => 'assistant', content => '' };
+               $promise->resolve({
+                   role       => 'assistant',
+                   content    => $msg->{content} // '',
+                   tool_calls => $msg->{tool_calls} // []
+               });
            } else {
-               warn $tx->result->message;
-               $promise->reject("Ollama Fehler: " . $tx->result->message);
+               my $err_msg = $tx->error ? $tx->error->{message} : "Unknown Connection Error";
+               $promise->reject("Ollama Fehler: " . $err_msg);
            }
        });
 
-   } elsif ($service eq 'groq') {
-       # Groq Cloud API
-       my $url = 'https://api.groq.com/openai/v1/chat/completions';
+   } elsif ($service eq 'groq' || $service eq 'openrouter') {
+       my $url = $service eq 'groq' 
+           ? 'https://api.groq.com/openai/v1/chat/completions'
+           : 'https://openrouter.ai/api/v1/chat/completions';
+
        my $payload = {
-           model       => $model || 'llama3-8b-8192',
-           messages    => [{ role => 'user', content => $prompt }],
+           model       => $model || ($service eq 'groq' ? 'llama3-8b-8192' : 'google/gemini-2.0-flash-001'),
+           messages    => $messages,
            temperature => 0.1
        };
+       $payload->{tools} = $tools if $tools && @$tools;
+
        my $headers = {
            'Authorization' => "Bearer $api_key",
            'Content-Type'  => 'application/json'
        };
+
        $ua->post($url => $headers => json => $payload => sub ($ua, $tx) {
-           if ($tx->result->is_success) {
+           if ($tx->result && $tx->result->is_success) {
                my $res = eval { decode_json($tx->result->body) };
-               $promise->resolve($res->{choices}[0]{message}{content} // '');
+               my $choice = $res->{choices}[0]{message};
+               $promise->resolve({
+                   role       => 'assistant',
+                   content    => $choice->{content} // '',
+                   tool_calls => $choice->{tool_calls} // []
+               });
            } else {
-               $promise->reject("Groq API Fehler: " . $tx->result->message);
+               my $err_msg = $tx->error ? $tx->error->{message} : "Unknown Connection Error";
+               $promise->reject("Cloud API Fehler ($service): " . $err_msg);
            }
        });
 
    } elsif ($service eq 'gemini') {
-       # Google Gemini API
        my $sel_model = $model || 'gemini-2.0-flash';
        my $url = "https://generativelanguage.googleapis.com/v1beta/models/${sel_model}:generateContent?key=${api_key}";
-       my $payload = {
-           contents => [{ parts => [{ text => $prompt }] }]
-       };
-       $ua->post($url => json => $payload => sub ($ua, $tx) {
-           if ($tx->result->is_success) {
-               my $res = eval { decode_json($tx->result->body) };
-               $promise->resolve($res->{candidates}[0]{content}{parts}[0]{text} // '');
-           } else {
-               warn $tx->result->message;
-               $promise->reject("Gemini API Fehler: " . $tx->result->message);
-           }
-       });
+       
+       my @gemini_contents;
+       for my $m (@$messages) {
+           my $role = $m->{role} eq 'user' ? 'user' : 'model';
+           push @gemini_contents, {
+               role  => $role,
+               parts => [{ text => $m->{content} }]
+           };
+       }
 
-   } elsif ($service eq 'openrouter') {
-       # OpenRouter Multi-Provider API
-       my $url = 'https://openrouter.ai/api/v1/chat/completions';
-       my $payload = {
-           model    => $model || 'google/gemini-2.0-flash-001',
-           messages => [{ role => 'user', content => $prompt }]
-       };
-       my $headers = {
-           'Authorization' => "Bearer $api_key",
-           'Content-Type'  => 'application/json'
-       };
-       $ua->post($url => $headers => json => $payload => sub ($ua, $tx) {
-           if ($tx->result->is_success) {
+       my $payload = { contents => \@gemini_contents };
+       
+       if ($tools && @$tools) {
+           my @declarations = map { $_->{function} } @$tools;
+           $payload->{tools} = [{ functionDeclarations => \@declarations }];
+       }
+
+       $ua->post($url => json => $payload => sub ($ua, $tx) {
+           if ($tx->result && $tx->result->is_success) {
                my $res = eval { decode_json($tx->result->body) };
-               $promise->resolve($res->{choices}[0]{message}{content} // '');
+               my $part = $res->{candidates}[0]{content}{parts}[0];
+               
+               my @tool_calls;
+               if ($part->{functionCall}) {
+                   push @tool_calls, {
+                       id       => 'call_gemini_' . time(),
+                       type     => 'function',
+                       function => {
+                           name      => $part->{functionCall}{name},
+                           arguments => $part->{functionCall}{args}
+                       }
+                   };
+               }
+
+               $promise->resolve({
+                   role       => 'assistant',
+                   content    => $part->{text} // '',
+                   tool_calls => \@tool_calls
+               });
            } else {
-               warn $tx->result->message;
-               $promise->reject("OpenRouter API Fehler: " . $tx->result->message);
+               my $err_msg = $tx->error ? $tx->error->{message} : "Unknown Connection Error";
+               $promise->reject("Gemini API Fehler: " . $err_msg);
            }
        });
 
    } else {
-       $promise->reject("Unbekannte Schnittstelle: $service");
+       $promise->reject("Schnittstelle nicht unterstützt: $service");
    }
 
    return $promise;
 };
 
 # ==========================================
-# PROMPT GENERATOREN (Nativ ohne PromptDB-Zwang)
+# PROMPT GENERATOREN
 # ==========================================
 sub prompt_for_loading ($filename, $preview) {
    return <<"PROMPT";
 You are an expert R developer.
-Carefully analyze the following file preview of '$filename' to determine its format, column separator (e.g., comma, semicolon, tab, or space), and decimal separator (comma or dot):
+Determine the structure of the dataset file '$filename' from the following preview:
 
 File Preview:
 $preview
 
-Write a robust R script using base R (such as read.csv, read.csv2, read.delim) or readr (read_delim) to load this file into a data frame named 'df'.
-Make sure to explicitly specify the correct 'sep' (separator) and 'dec' (decimal) parameters matching the preview analysis to avoid parser failures like "more columns than column names" / "mehr Spalten als Spaltennamen". Please make sure to load tidyverse if you plan to use %>%
+Write a simple R script to load this file into a data frame named 'df'. Use base R or readr.
+Ensure that the separator and decimal markers are correct.
 
-If the file extension indicates an Excel file (.xlsx or .xls), use 'readxl::read_excel'.
-
-Return ONLY the executable R code to load the file.
-Do not wrap your output in markdown formatting (like ```r or ```).
-PROMPT
-}
-
-sub prompt_for_modification ($user_input, $current_code, $summary) {
-   return <<"PROMPT";
-You are a statistical data analysis assistant.
-Modify the existing R code to satisfy the user's request. Try to stay in the tidyverse if possible.
-User request: $user_input
-
-Current R code:
-$current_code
-
-Current dataset summary:
-$summary
-
-Ensure that:
-1. All changes are based on the data frame named 'df'.
-2. Any plots generated MUST be saved in BOTH of the following formats in the current directory, using the exact same base filename:
-   - A static PNG image (e.g., 'plot.png') for thumbnail rendering.
-   - A high-quality PDF document (e.g., 'plot.pdf') for publication-quality downloading.
-3. You return ONLY the complete modified R code. No explanations, no markdown blocks.
-PROMPT
-}
-
-sub prompt_for_repair ($error_msg, $failed_code) {
-   return <<"PROMPT";
-The following R code failed to run:
-$failed_code
-
-It resulted in this error message:
-$error_msg
-
-Fix the error, adjust the code, and return the corrected R code.
-Ensure that any plots generated are saved BOTH as a static PNG image (e.g., 'plot.png') and as a high-quality PDF document (e.g., 'plot.pdf') in the current directory, using the exact same base filename.
-Return ONLY valid R code. No commentary. No markdown blocks.
+Return ONLY the raw executable R code to load the file. No commentary, no markdown.
 PROMPT
 }
 
 # ==========================================
-# HELPER: R Code Ausführung
+# HELPER: R Code Ausführung (Absturzsicher via eval)
 # ==========================================
 helper execute_r => sub ($c, $code, $workdir) {
    my ($fh, $temp_file) = tempfile(DIR => $workdir, SUFFIX => '.R', UNLINK => 1);
@@ -193,15 +214,21 @@ helper execute_r => sub ($c, $code, $workdir) {
    close $fh;
 
    my $filename = basename($temp_file);
-
    my $R = Statistics::R->new(shared => 0);
    $R->startR;
 
-   $R->run(qq{setwd("$workdir")});
-   $R->run(qq{source("$filename", encoding = "UTF-8", echo = FALSE, print.eval = TRUE)});
-
-   my $err = $R->error;
-   my $out = $R->read;
+   my ($out, $err);
+   
+   # eval verhindert den direkten Perl-Absturz, wenn Statistics::R ein R-Error wirft
+   eval {
+       $R->run(qq{setwd("$workdir")});
+       $R->run(qq{source("$filename", encoding = "UTF-8", echo = FALSE, print.eval = TRUE)});
+       $err = $R->error;
+       $out = $R->read;
+   };
+   if ($@) {
+       $err //= $@;
+   }
 
    $R->stopR;
    unlink($temp_file) if -e $temp_file;
@@ -213,7 +240,7 @@ helper execute_r => sub ($c, $code, $workdir) {
 };
 
 # ==========================================
-# HELPER: Session-Speicherung & Laden
+# HELPER: Session-Verwaltung
 # ==========================================
 helper save_session_data => sub ($c, $session_id, $data) {
    $SESSIONS{$session_id} = $data;
@@ -245,6 +272,76 @@ helper load_session_data => sub ($c, $session_id) {
 };
 
 # ==========================================
+# INTELLIGENTE REKURSIVE AGENTEN-SCHLEIFE
+# ==========================================
+sub run_agent_tool_loop ($c, $messages, $session, $llm_config, $step) {
+    if ($step >= 4) {
+        return Mojo::Promise->resolve({
+            output   => "Maximale Anzahl an Analyseschritten erreicht.",
+            attempts => $step
+        });
+    }
+
+    return $c->call_chat_llm($messages, \@available_tools, $llm_config)->then(sub ($response) {
+        my $tool_calls = $response->{tool_calls};
+
+        if ($tool_calls && @$tool_calls) {
+            my $tool_call = $tool_calls->[0];
+            my $func_name = $tool_call->{function}{name};
+            my $args      = $tool_call->{function}{arguments};
+
+            if (!ref $args) {
+                $args = eval { decode_json($args) } // {};
+            }
+
+            if ($func_name eq 'execute_r_code') {
+                my $code = $args->{code};
+                $c->app->log->info("[Agent] Ausführung R-Code (Schritt $step):\n$code");
+
+                # Loader-Code voranstellen, damit 'df' im neuen Prozess geladen ist
+                my $full_code = ($session->{loader_code} // "") . "\n\n" . $code;
+
+                my ($out, $err) = $c->execute_r($full_code, $session->{workdir});
+                my $result_text;
+
+                if ($err) {
+                    $result_text = "R-Fehler während der Ausführung:\n$err";
+                    $c->app->log->warn("[Agent] R-Ausführungsfehler empfangen.");
+                } else {
+                    $result_text = "Erfolgreiche Ausführung.\nAusgabe:\n$out";
+                    $session->{r_code} .= "\n\n# --- Schritt $step ---\n" . $code;
+                }
+
+                push @$messages, $response;
+                push @$messages, {
+                    role         => 'tool',
+                    name         => 'execute_r_code',
+                    content      => $result_text,
+                    tool_call_id => $tool_call->{id} // 'call_id'
+                };
+
+                return run_agent_tool_loop($c, $messages, $session, $llm_config, $step + 1);
+            } else {
+                push @$messages, $response;
+                push @$messages, {
+                    role         => 'tool',
+                    name         => $func_name,
+                    content      => "Fehler: Unbekanntes Tool '$func_name'.",
+                    tool_call_id => $tool_call->{id} // 'call_id'
+                };
+                return run_agent_tool_loop($c, $messages, $session, $llm_config, $step + 1);
+            }
+        } else {
+            push @$messages, $response;
+            return Mojo::Promise->resolve({
+                output   => $response->{content},
+                attempts => $step
+            });
+        }
+    });
+}
+
+# ==========================================
 # ROUTEN (API)
 # ==========================================
 
@@ -256,7 +353,7 @@ post '/api/upload' => sub ($c) {
    my $session_id = $c->req->param('session_id');
    $session_id =~ s/[^a-zA-Z0-9_\-]//g if defined $session_id;
 
-    if (!$session_id) {
+   if (!$session_id) {
        $session_id = 'session_' . time() . '_' . int(rand(1000));
    }
 
@@ -268,7 +365,7 @@ post '/api/upload' => sub ($c) {
    my $filepath = "$workdir/$filename";
    $upload->move_to($filepath);
 
-   my $first_500_bytes = "[Binaerdatei - keine Text-Vorschau verfuegbar]";
+   my $first_500_bytes = "[Keine Textvorschau verfuegbar]";
    if (-T $filepath) {
        open my $fh, '<', $filepath or return $c->render(json => {error => "Kann Datei nicht lesen: $!"});
        read($fh, $first_500_bytes, 500);
@@ -276,42 +373,61 @@ post '/api/upload' => sub ($c) {
        $first_500_bytes = Encode::decode_utf8($first_500_bytes);
    }
 
-   my $initial_session = {
-       workdir  => $workdir,
-       filename => $filename,
-       r_code   => "",
-       summary  => "",
-       history  => []
-   };
-   $c->save_session_data($session_id, $initial_session);
-
-   $c->render_later;
-   $c->inactivity_timeout(120); 
-
    my $prompt = prompt_for_loading($filename, $first_500_bytes);
 
-   $c->call_cloud_llm($prompt, $llm_config)->then(sub ($r_code) {
-       # Eventuell ausgegebene Markdown-Blöcke bereinigen
+   $c->render_later;
+   $c->inactivity_timeout(120);
+
+   $c->call_chat_llm([{ role => 'user', content => $prompt }], undef, $llm_config)->then(sub ($response) {
+       my $r_code = $response->{content};
        $r_code =~ s/^```[rR]?\s*//gm;
        $r_code =~ s/```$//gm;
 
+       # Den reinen Ladebefehl sichern (ohne Summaries)
+       my $loader_code = $r_code;
+
        $r_code .= "\noptions(width=1000)\nprint('---SUMMARY START---')\ncat('--- STRUKTUR ---\\n')\nstr(df)\ncat('\\n--- SUMMARY ---\\n')\nsummary(df)\n";
 
-       my $session = $c->load_session_data($session_id);
-       $session->{r_code} = $r_code;
-
        my ($out, $err) = $c->execute_r($r_code, $workdir);
-
        if ($err) {
-           return $c->render(json => {error => "R-Ausfuehrungsfehler beim Laden", r_err => $err, code => $r_code});
+           return $c->render(json => {error => "R-Ladefehler", r_err => $err, code => $r_code});
        }
 
        my $summary = $out;
        $summary =~ s/.*---SUMMARY START---(?:\r?\n)?//s;
 
-       $session->{summary} = $summary;
+           my @history = (
+           {
+               role    => 'system',
+               content => "You are an expert statistical assistant. The user uploaded a dataset named '$filename'. "
+                        . "A data frame named 'df' has already been loaded for you in R.\n\n"
+                        . "Strict Formatting Guidelines:\n"
+                        . "1. NEVER use LaTeX math delimiters like '\$' or '\$\$' in your chat responses.\n"
+                        . "2. NEVER use LaTeX commands like '\\times', '\\frac', '\\cdot', etc.\n"
+                        . "3. Always write formulas and calculations in clean, readable plain Unicode text (e.g., use '×' instead of '\\times' or '*', and use '=' instead of math blocks).\n"
+                        . "   Example: '5! = 5 × 4 × 3 × 2 × 1 = 120'.\n"
+                        . "4. Present statistical outputs and equations clearly with linebreaks and indentation.\n\n"
+                        . "Execution Guidelines:\n"
+                        . "1. Whenever you need to perform calculations, run statistical tests, or generate plots, you MUST use the 'execute_r_code' tool.\n"
+                        . "2. Do not write raw markdown code blocks in your chat response; always use the tool instead.\n"
+                        . "3. Always verify your results and explain them clearly to the user."
+           },
+           {
+               role    => 'assistant',
+               content => "Dataset loaded successfully. Here is the summary:\n\n" . $summary
+           }
+       );
+
+       my $session = {
+           workdir     => $workdir,
+           filename    => $filename,
+           loader_code => $loader_code, # Hier separat gesichert
+           r_code      => $r_code,
+           summary     => $summary,
+           history     => \@history
+       };
        $c->save_session_data($session_id, $session);
-warn $session_id;
+
        $c->render(json => {
            session_id => $session_id,
            summary    => $summary,
@@ -319,7 +435,7 @@ warn $session_id;
        });
    })->catch(sub ($err) {
        warn $err;
-       $c->render(json => {error => "LLM-Dienstfehler: $err"}, status => 500);
+       $c->render(json => {error => "LLM-Dienstfehler beim Laden: $err"}, status => 500);
    });
 };
 
@@ -335,75 +451,47 @@ post '/api/chat' => sub ($c) {
    return $c->render(json => {error => 'Sitzung nicht gefunden'}) unless $session;
 
    $c->render_later;
-   $c->inactivity_timeout(120); 
+   $c->inactivity_timeout(120);
 
-   my $prompt = prompt_for_modification($user_input, $session->{r_code}, $session->{summary});
+   # 1. Zustand des Verzeichnisses VOR der Ausführung erfassen
+   opendir(my $dh_before, $session->{workdir});
+   my %files_before = map { $_ => 1 } readdir($dh_before);
+   closedir($dh_before);
 
-   $c->call_cloud_llm($prompt, $llm_config)->then(sub ($new_r_code) {
-       $new_r_code =~ s/^```[rR]?\s*//gm;
-       $new_r_code =~ s/```$//gm;
+   my $messages = $session->{history} // [];
+   push @$messages, { role => 'user', content => $user_input };
 
-       my $attempt_run = sub {
-           my ($code, $iteration, $retry_sub) = @_;
-
-           my ($out, $err) = $c->execute_r($code, $session->{workdir});
-
-           # Reparatur-Schleife bei syntaktischen Fehlern im R-Skript
-           if ($err && $iteration < 3) {
-               $c->app->log->warn("R-Fehler in Versuch $iteration. Starte Reparatur...");
-               my $repair_prompt = prompt_for_repair($err, $code);
-               return $c->call_cloud_llm($repair_prompt, $llm_config)->then(sub ($repaired_code) {
-                   $repaired_code =~ s/^```[rR]?\s*//gm;
-                   $repaired_code =~ s/```$//gm;
-                   return $retry_sub->($repaired_code, $iteration + 1, $retry_sub);
-               });
-           }
-
-           return Mojo::Promise->resolve({code => $code, out => $out, err => $err, attempts => $iteration});
-       };
-
-       return $attempt_run->($new_r_code, 1, $attempt_run);
-
-   })->then(sub ($result) {
-
-       $session->{r_code} = $result->{code};
+   run_agent_tool_loop($c, $messages, $session, $llm_config, 1)->then(sub ($result) {
+       
+       $session->{history} = $messages;
        $c->save_session_data($session_id, $session);
 
-       if ($result->{err}) {
-           return $c->render(json => {
-               success => \0,
-               message => "Code-Ausfuehrung nach $result->{attempts} Versuchen fehlgeschlagen.",
-               error   => $result->{err}
-           });
-       }
+       # 2. Zustand des Verzeichnisses NACH der Ausführung erfassen
+       opendir(my $dh_after, $session->{workdir});
+       my @all_files = readdir($dh_after);
+       closedir($dh_after);
 
-       opendir(my $dh, $session->{workdir});
-       my @all_files = readdir($dh);
-       closedir($dh);
+       # Nur Dateien filtern, die in DIESEM Schritt neu erzeugt wurden
+       my @new_files = grep { !$files_before{$_} } @all_files;
 
-       # Filter thumbnail PNG / image formats for the native viewer preview
-       my @png_files = grep { !/^\./ && $_ ne $session->{filename} && $_ =~ /\.(?:png|jpe?g|gif|svg)$/i } @all_files;
-       
-       # Filter PDF files for high quality download
-       my @pdf_files = grep { !/^\./ && $_ ne $session->{filename} && $_ =~ /\.pdf$/i } @all_files;
+       my @png_files = grep { !/^\./ && $_ ne $session->{filename} && $_ =~ /\.(?:png|jpe?g|gif|svg)$/i } @new_files;
+       my @pdf_files = grep { !/^\./ && $_ ne $session->{filename} && $_ ne 'Rplots.pdf' && $_ =~ /\.pdf$/i } @new_files;
 
        my @thumbnails = map { "/api/download/file/$session_id/$_" } @png_files;
        my @pdf_urls   = map { "/api/download/file/$session_id/$_" } @pdf_files;
-
-       # If PDF files were successfully generated, use them for 'downloads'. Otherwise fall back to PNGs.
        my @downloads  = @pdf_urls ? @pdf_urls : @thumbnails;
 
        $c->render(json => {
            success    => \1,
-           output     => $result->{out},
+           output     => $result->{output},
            attempts   => $result->{attempts},
-           downloads  => \@downloads,     # Primarily contains the PDF links
-           thumbnails => \@thumbnails     # Retains original PNG links for visual preview
+           downloads  => \@downloads,
+           thumbnails => \@thumbnails
        });
 
    })->catch(sub ($err) {
        warn $err;
-       $c->render(json => {error => "Verarbeitungsfehler", details => "$err"}, status => 500);
+       $c->render(json => {error => "Fehler bei der Agenten-Steuerung", details => "$err"}, status => 500);
    });
 };
 
@@ -432,8 +520,6 @@ get '/api/download/file/:session_id/:filename' => [filename => qr /.+/] => sub (
    my $session = $c->load_session_data($session_id);
    return $c->reply->not_found unless $session;
 
-   # Backward compatibility fallback: If PNG is requested but '?pdf=1' is provided,
-   # swap file pointer to the PDF equivalent if it exists in the workspace.
    if ($c->param('pdf') && $filename =~ /\.png$/i) {
        my $pdf_filename = $filename;
        $pdf_filename =~ s/\.png$/\.pdf/i;
