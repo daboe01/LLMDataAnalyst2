@@ -858,18 +858,22 @@ var BackendBaseURL = @"";
         [chatInputField setEnabled:YES];
         [chatInputField becomeFirstResponder];
         [chatSendButton setEnabled:YES];
-        [statusLabel setStringValue:@"Antwort empfangen."];
+        [statusLabel setStringValue:@"Response received."];
 
-        if (data.error || data.success === false) {
-            var errText = data.error || "Unerwarteter Fehler im Backend.";
+        if (data.error || data.success === false)
+        {
+            var errText = data.error || "Unexpected backend error.";
             if (data.details) errText += "\n\nDetails: " + data.details;
-            [selfRef appendMessageWithSender:@"bot" text:@"Fehler:\n" + errText isError:YES downloads:nil thumbnails:nil saveToHistory:YES];
-        } else {
-            // Text-Erklärung wird nur befüllt, wenn KEINE Abbildungen generiert wurden
+            [selfRef appendMessageWithSender:@"bot" text:@"Error:\n" + errText isError:YES downloads:nil thumbnails:nil saveToHistory:YES];
+        }
+        else
+        {
+            // Text explanations are only displayed if NO charts or figures were generated
             var msg = "";
             if (!data.downloads || data.downloads.length === 0) {
-                msg = data.output || "Code erfolgreich ausgeführt.";
+                msg = data.output || "Code executed successfully.";
             }
+
             var cpDownloads = data.downloads ? [CPArray arrayWithArray:data.downloads] : nil;
             var cpThumbnails = data.thumbnails ? [CPArray arrayWithArray:data.thumbnails] : nil;
             
@@ -883,7 +887,7 @@ var BackendBaseURL = @"";
         [chatInputField becomeFirstResponder];
         [chatSendButton setEnabled:YES];
         [statusLabel setStringValue:@"Verarbeitungsfehler."];
-        [selfRef appendMessageWithSender:@"bot" text:@"Fehler bei der Kommunikation: " + error.message isError:YES downloads:nil thumbnails:nil saveToHistory:YES];
+        [selfRef appendMessageWithSender:@"bot" text:@"Communication failure: " + error.message isError:YES downloads:nil thumbnails:nil saveToHistory:YES];
     });
 }
 
@@ -1033,13 +1037,13 @@ var BackendBaseURL = @"";
         [_chatMessages addObject:historyItem];
     }
 
-    // Breite des Dokuments abzüglich Scrollbar-Puffer (verhindert Abschneiden des rechten Rands)
+    // Document width minus scrollbar padding (prevents clipping)
     var docWidth = CGRectGetWidth([_chatScrollView bounds]) - 50;
     
-    // 1. Text bereinigen (LaTeX-Entfernung)
+    // 1. Format equations and clean LaTeX notation
     var cleanedText = [self cleanMathNotation:text];
 
-    // 2. CPTextView erstellen und via sizeToFit die exakte Höhe berechnen lassen
+    // 2. Build the CPTextView and compute the exact vertical bounds using sizeToFit
     var textView = [[CPTextView alloc] initWithFrame:CGRectMake(15, 10, docWidth - 30, 20)];
     [textView setString:cleanedText];
     [textView setTextColor:[CPColor blackColor]];
@@ -1049,11 +1053,11 @@ var BackendBaseURL = @"";
     [textView setBackgroundColor:[CPColor clearColor]];
     [textView setAutoresizingMask:CPViewWidthSizable];
     
-    // Nutzt Cappuccinos LayoutManager, um die exakte Texthöhe zu ermitteln
+    // Invokes Cappuccino's native LayoutManager to measure exact height down to the pixel
     [textView sizeToFit];
     var textHeight = CGRectGetHeight([textView frame]);
     
-    // 3. Dynamische Höhenanpassung der Bubble je nach Textvorhandensein
+    // 3. Dynamic card height depending on text presence
     var cardHeight = (cleanedText.length > 0) ? (textHeight + 40) : 20;
     
     var imagesToRender = []; // Array of { thumbUrl: string, downloadUrl: string, filename: string }
@@ -1067,12 +1071,12 @@ var BackendBaseURL = @"";
         return dotIdx === -1 ? filename : filename.substring(0, dotIdx);
     };
 
-    // Zuordnen von Thumbnails zu entsprechenden hochauflösenden PDF Downloads
+    // Match high-quality PDF downloads to corresponding image thumbnails
     if (thumbnails && [thumbnails count] > 0) {
         for (var i = 0; i < [thumbnails count]; i++) {
             var thumbUrl = [thumbnails objectAtIndex:i];
             var baseName = getBaseName(thumbUrl);
-            var matchedDownloadUrl = thumbUrl;
+            var matchedDownloadUrl = thumbUrl; // Fallback if no matching PDF is found
 
             if (downloads && [downloads count] > 0) {
                 for (var j = 0; j < [downloads count]; j++) {
@@ -1107,7 +1111,7 @@ var BackendBaseURL = @"";
         }
     }
 
-    // Erfassen aller übrigen Dateien (z.B. CSV-Exporte)
+    // Capture remaining files (such as CSV exports) that do not belong to a thumbnail
     if (downloads && [downloads count] > 0) {
         for (var i = 0; i < [downloads count]; i++) {
             var dlUrl = [downloads objectAtIndex:i];
@@ -1120,8 +1124,8 @@ var BackendBaseURL = @"";
         }
     }
 
-    // Höhenberechnung für die Renderblöcke
-    cardHeight += (imagesToRender.length * 265); // Reduziert, da Label wegfällt
+    // Compute layout height offset for media blocks
+    cardHeight += (imagesToRender.length * 265); // Optimized space padding without raw file title
     cardHeight += (filesToRender.length * 45);
 
     var isUserMsg = [sender isEqualToString:@"user"];
@@ -1132,7 +1136,7 @@ var BackendBaseURL = @"";
         fillColor = [CPColor colorWithRed:1.0 green:0.90 blue:0.90 alpha:1.0];
     }
 
-    // Erstellen der Box samt dem integrierten Dreiecks-Tail an der Unterseite
+    // Initialize bubble box container with the triangular tail on the lower end
     var cardBox = [[SpeechBubbleBox alloc] initWithFrame:CGRectMake(15, _currentChatY, docWidth, cardHeight + 10) 
                                                   isUser:isUserMsg 
                                                fillColor:fillColor];
@@ -1140,10 +1144,10 @@ var BackendBaseURL = @"";
     [cardBox addSubview:textView];
 
     if (imagesToRender.length > 0 || filesToRender.length > 0) {
-        // Reduziertes Offset, wenn kein Text vorhanden ist (bündiger Start)
+        // Reduced vertical starting offset if no text is present (aligns cleanly to the top)
         var runningY = (cleanedText.length > 0) ? (textHeight + 20) : 15;
         
-        // Render block für Bilder (PNG Thumbnail + PDF Download-Button)
+        // Render block for images (PNG Thumbnail + PDF Download Button)
         for (var i = 0; i < imagesToRender.length; i++) {
             var imgItem = imagesToRender[i];
             var resolvedThumbUrl = [self backendPath:imgItem.thumbUrl];
@@ -1152,7 +1156,7 @@ var BackendBaseURL = @"";
             var timestamp = new Date().getTime();
             var bustUrl = resolvedThumbUrl + "?t=" + timestamp;
 
-            // HINWEIS: Das redundante "filename:"-Label wurde hier entfernt, um Überlappungen zu vermeiden.
+            // Note: Redundant image label title removed here to prevent overlapping
             var cpImage = [[CPImage alloc] initWithContentsOfFile:bustUrl];
             var imageView = [[CPImageView alloc] initWithFrame:CGRectMake(15, runningY, docWidth - 30, 220)];
             [imageView setImage:cpImage];
@@ -1164,7 +1168,7 @@ var BackendBaseURL = @"";
 
             var dlPlotButton = [[CPButton alloc] initWithFrame:CGRectMake(15, runningY, 180, 24)];
             var isPdf = [[imgItem.downloadUrl lowercaseString] hasSuffix:@".pdf"];
-            [dlPlotButton setTitle:(isPdf ? @"PDF herunterladen" : @"Grafik herunterladen")];
+            [dlPlotButton setTitle:(isPdf ? @"Download PDF" : @"Download Graphic")];
             [dlPlotButton setTarget:self];
             [dlPlotButton setAction:@selector(openResourceAction:)];
             dlPlotButton._representedObject = resolvedDownloadUrl;
@@ -1172,14 +1176,14 @@ var BackendBaseURL = @"";
             runningY += 35;
         }
 
-        // Render block für andere Anhänge / CSV Exporte
+        // Render block for other file exports (e.g., CSV)
         for (var i = 0; i < filesToRender.length; i++) {
             var fileItem = filesToRender[i];
             var resolvedUrl = [self backendPath:fileItem.downloadUrl];
             var filename = fileItem.filename;
 
             var dlFileButton = [[CPButton alloc] initWithFrame:CGRectMake(15, runningY, docWidth - 30, 30)];
-            [dlFileButton setTitle:@"Datei herunterladen: " + filename];
+            [dlFileButton setTitle:@"Download File: " + filename];
             [dlFileButton setTarget:self];
             [dlFileButton setAction:@selector(openResourceAction:)];
             [dlFileButton setAutoresizingMask:CPViewWidthSizable];
@@ -1200,8 +1204,6 @@ var BackendBaseURL = @"";
         [[_chatScrollView contentView] scrollToPoint:CGPointMake(0, _currentChatY - boundsHeight + 80)];
     }
 }
-
-// --- AKTIONEN UND HILFSMETHODEN ---
 
 - (void)downloadScriptAction:(id)sender
 {
@@ -1241,11 +1243,11 @@ var BackendBaseURL = @"";
     if (!rawText) return @"";
     var t = rawText;
     
-    // 1. LaTeX-Formelblöcke ($$ und $) auflösen
+    // 1. Resolve LaTeX display and inline math blocks ($$ and $)
     t = t.replace(/\$\$(.*?)\$\$/g, "$1");
     t = t.replace(/\$(.*?)\$/g, " $1 ");
     
-    // 2. LaTeX-Befehle durch saubere Unicode-Symbole ersetzen
+    // 2. Map LaTeX math syntax to clean Unicode symbols
     t = t.replace(/\\times/g, " × ");
     t = t.replace(/\\div/g, " ÷ ");
     t = t.replace(/\\cdot/g, " · ");
@@ -1262,11 +1264,11 @@ var BackendBaseURL = @"";
     t = t.replace(/\\sigma/g, " σ ");
     t = t.replace(/\\Delta/g, " Δ ");
     
-    // Komplexe Brüche und Wurzeln vereinfachen
+    // Simplify complex fractions and square roots
     t = t.replace(/\\sqrt\{(.*?)\}/g, " √($1) ");
     t = t.replace(/\\frac\{(.*?)\}\{(.*?)\}/g, " ($1 / $2) ");
     
-    // Zeilenumbrüche vereinheitlichen
+    // Standardize line endings
     t = t.replace(/\\n/g, "\n");
     
     return t;

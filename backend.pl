@@ -1,5 +1,5 @@
 #!/usr/bin/env perl
-# LLMDataAnalyst - Multi-Provider Backend mit nativem Tool Calling
+# LLMDataAnalyst - Multi-Provider Backend with Native Tool Calling
 use Mojolicious::Lite -signatures;
 use Mojo::UserAgent;
 use Mojo::JSON qw(decode_json encode_json);
@@ -19,7 +19,7 @@ $ua->max_connections(0);
 my %SESSIONS;
 
 # ==========================================
-# CORS-SUPPORT (Für lokale Entwicklungsports)
+# CORS-SUPPORT (For local development ports)
 # ==========================================
 app->hook(before_dispatch => sub ($c) {
     $c->res->headers->header('Access-Control-Allow-Origin'  => '*');
@@ -33,23 +33,23 @@ app->hook(before_dispatch => sub ($c) {
 });
 
 # ==========================================
-# DEFINITION DER TOOLS (JSON SCHEMA)
+# DEFINITION OF TOOLS (JSON SCHEMA)
 # ==========================================
 my $r_tool_schema = {
     type     => 'function',
     function => {
         name        => 'execute_r_code',
-        description => 'Führt R-Statistik- und Mathematik-Code auf dem geladenen Datensatz aus. '
-                     . 'Der Datensatz ist bereits in einem Dataframe namens "df" geladen. '
-                     . 'Nutzen Sie dieses Tool für Berechnungen, statistische Tests (t-Test, ANOVA, Regression) '
-                     . 'oder zur Erstellung von Visualisierungen. Visualisierungen MÜSSEN im aktuellen Verzeichnis '
-                     . 'sowohl als PNG (z.B. "plot.png") als auch als PDF (z.B. "plot.pdf") unter demselben Namen gespeichert werden.',
+        description => 'Executes R statistical and mathematical code on the loaded dataset. '
+                     . 'The dataset is already loaded into a dataframe named "df". '
+                     . 'Use this tool for calculations, statistical tests (t-test, ANOVA, regression), '
+                     . 'or to generate visualizations. Visualizations MUST be saved in the current directory '
+                     . 'as BOTH a PNG (e.g., "plot.png") and a PDF (e.g., "plot.pdf") using the exact same base filename.',
         parameters  => {
             type       => 'object',
             properties => {
                 code => {
                     type        => 'string',
-                    description => 'Der vollständige und ausführbare R-Code.',
+                    description => 'The complete and executable R code.',
                 },
             },
             required => ['code'],
@@ -60,7 +60,7 @@ my $r_tool_schema = {
 my @available_tools = ($r_tool_schema);
 
 # ==========================================
-# HELPER: Dynamischer Chat-Client (mit Tool Calling Support)
+# HELPER: Dynamic Chat Client (with Tool Calling Support)
 # ==========================================
 helper call_chat_llm => sub ($c, $messages, $tools, $config) {
    my $service  = $config->{service}  // 'ollama';
@@ -95,7 +95,7 @@ helper call_chat_llm => sub ($c, $messages, $tools, $config) {
                });
            } else {
                my $err_msg = $tx->error ? $tx->error->{message} : "Unknown Connection Error";
-               $promise->reject("Ollama Fehler: " . $err_msg);
+               $promise->reject("Ollama Connection Error: " . $err_msg);
            }
        });
 
@@ -127,7 +127,7 @@ helper call_chat_llm => sub ($c, $messages, $tools, $config) {
                });
            } else {
                my $err_msg = $tx->error ? $tx->error->{message} : "Unknown Connection Error";
-               $promise->reject("Cloud API Fehler ($service): " . $err_msg);
+               $promise->reject("Cloud API Error ($service): " . $err_msg);
            }
        });
 
@@ -175,19 +175,19 @@ helper call_chat_llm => sub ($c, $messages, $tools, $config) {
                });
            } else {
                my $err_msg = $tx->error ? $tx->error->{message} : "Unknown Connection Error";
-               $promise->reject("Gemini API Fehler: " . $err_msg);
+               $promise->reject("Gemini API Error: " . $err_msg);
            }
        });
 
    } else {
-       $promise->reject("Schnittstelle nicht unterstützt: $service");
+       $promise->reject("Interface not supported: $service");
    }
 
    return $promise;
 };
 
 # ==========================================
-# PROMPT GENERATOREN
+# PROMPT GENERATORS
 # ==========================================
 sub prompt_for_loading ($filename, $preview) {
    return <<"PROMPT";
@@ -205,7 +205,7 @@ PROMPT
 }
 
 # ==========================================
-# HELPER: R Code Ausführung (Absturzsicher via eval)
+# HELPER: Safe R Code Execution
 # ==========================================
 helper execute_r => sub ($c, $code, $workdir) {
    my ($fh, $temp_file) = tempfile(DIR => $workdir, SUFFIX => '.R', UNLINK => 1);
@@ -219,7 +219,7 @@ helper execute_r => sub ($c, $code, $workdir) {
 
    my ($out, $err);
    
-   # eval verhindert den direkten Perl-Absturz, wenn Statistics::R ein R-Error wirft
+   # eval catches any fatal Perl exceptions thrown by Statistics::R when an R script fails
    eval {
        $R->run(qq{setwd("$workdir")});
        $R->run(qq{source("$filename", encoding = "UTF-8", echo = FALSE, print.eval = TRUE)});
@@ -240,7 +240,7 @@ helper execute_r => sub ($c, $code, $workdir) {
 };
 
 # ==========================================
-# HELPER: Session-Verwaltung
+# HELPER: Session State Management
 # ==========================================
 helper save_session_data => sub ($c, $session_id, $data) {
    $SESSIONS{$session_id} = $data;
@@ -272,12 +272,12 @@ helper load_session_data => sub ($c, $session_id) {
 };
 
 # ==========================================
-# INTELLIGENTE REKURSIVE AGENTEN-SCHLEIFE
+# RECURSIVE AGENT TOOL CALLING LOOP
 # ==========================================
 sub run_agent_tool_loop ($c, $messages, $session, $llm_config, $step) {
     if ($step >= 4) {
         return Mojo::Promise->resolve({
-            output   => "Maximale Anzahl an Analyseschritten erreicht.",
+            output   => "Maximum analysis steps reached.",
             attempts => $step
         });
     }
@@ -296,20 +296,20 @@ sub run_agent_tool_loop ($c, $messages, $session, $llm_config, $step) {
 
             if ($func_name eq 'execute_r_code') {
                 my $code = $args->{code};
-                $c->app->log->info("[Agent] Ausführung R-Code (Schritt $step):\n$code");
+                $c->app->log->info("[Agent] Executing R Code (Step $step):\n$code");
 
-                # Loader-Code voranstellen, damit 'df' im neuen Prozess geladen ist
+                # Prepend dataset loader so 'df' is available in the new R session
                 my $full_code = ($session->{loader_code} // "") . "\n\n" . $code;
 
                 my ($out, $err) = $c->execute_r($full_code, $session->{workdir});
                 my $result_text;
 
                 if ($err) {
-                    $result_text = "R-Fehler während der Ausführung:\n$err";
-                    $c->app->log->warn("[Agent] R-Ausführungsfehler empfangen.");
+                    $result_text = "R Error during execution:\n$err";
+                    $c->app->log->warn("[Agent] R execution error received.");
                 } else {
-                    $result_text = "Erfolgreiche Ausführung.\nAusgabe:\n$out";
-                    $session->{r_code} .= "\n\n# --- Schritt $step ---\n" . $code;
+                    $result_text = "Execution successful.\nOutput:\n$out";
+                    $session->{r_code} .= "\n\n# --- Step $step ---\n" . $code;
                 }
 
                 push @$messages, $response;
@@ -326,7 +326,7 @@ sub run_agent_tool_loop ($c, $messages, $session, $llm_config, $step) {
                 push @$messages, {
                     role         => 'tool',
                     name         => $func_name,
-                    content      => "Fehler: Unbekanntes Tool '$func_name'.",
+                    content      => "Error: Unknown tool '$func_name'.",
                     tool_call_id => $tool_call->{id} // 'call_id'
                 };
                 return run_agent_tool_loop($c, $messages, $session, $llm_config, $step + 1);
@@ -342,7 +342,7 @@ sub run_agent_tool_loop ($c, $messages, $session, $llm_config, $step) {
 }
 
 # ==========================================
-# ROUTEN (API)
+# ROUTES (API)
 # ==========================================
 
 post '/api/upload' => sub ($c) {
@@ -365,9 +365,9 @@ post '/api/upload' => sub ($c) {
    my $filepath = "$workdir/$filename";
    $upload->move_to($filepath);
 
-   my $first_500_bytes = "[Keine Textvorschau verfuegbar]";
+   my $first_500_bytes = "[No preview available]";
    if (-T $filepath) {
-       open my $fh, '<', $filepath or return $c->render(json => {error => "Kann Datei nicht lesen: $!"});
+       open my $fh, '<', $filepath or return $c->render(json => {error => "Cannot read file: $!"});
        read($fh, $first_500_bytes, 500);
        close $fh;
        $first_500_bytes = Encode::decode_utf8($first_500_bytes);
@@ -383,20 +383,19 @@ post '/api/upload' => sub ($c) {
        $r_code =~ s/^```[rR]?\s*//gm;
        $r_code =~ s/```$//gm;
 
-       # Den reinen Ladebefehl sichern (ohne Summaries)
        my $loader_code = $r_code;
 
-       $r_code .= "\noptions(width=1000)\nprint('---SUMMARY START---')\ncat('--- STRUKTUR ---\\n')\nstr(df)\ncat('\\n--- SUMMARY ---\\n')\nsummary(df)\n";
+       $r_code .= "\noptions(width=1000)\nprint('---SUMMARY START---')\ncat('--- STRUCTURE ---\\n')\nstr(df)\ncat('\\n--- SUMMARY ---\\n')\nsummary(df)\n";
 
        my ($out, $err) = $c->execute_r($r_code, $workdir);
        if ($err) {
-           return $c->render(json => {error => "R-Ladefehler", r_err => $err, code => $r_code});
+           return $c->render(json => {error => "R Loading Error", r_err => $err, code => $r_code});
        }
 
        my $summary = $out;
        $summary =~ s/.*---SUMMARY START---(?:\r?\n)?//s;
 
-           my @history = (
+       my @history = (
            {
                role    => 'system',
                content => "You are an expert statistical assistant. The user uploaded a dataset named '$filename'. "
@@ -421,7 +420,7 @@ post '/api/upload' => sub ($c) {
        my $session = {
            workdir     => $workdir,
            filename    => $filename,
-           loader_code => $loader_code, # Hier separat gesichert
+           loader_code => $loader_code,
            r_code      => $r_code,
            summary     => $summary,
            history     => \@history
@@ -435,7 +434,7 @@ post '/api/upload' => sub ($c) {
        });
    })->catch(sub ($err) {
        warn $err;
-       $c->render(json => {error => "LLM-Dienstfehler beim Laden: $err"}, status => 500);
+       $c->render(json => {error => "LLM service error on load: $err"}, status => 500);
    });
 };
 
@@ -448,12 +447,12 @@ post '/api/chat' => sub ($c) {
    my $llm_config = $payload->{llm_config} // {};
 
    my $session = $c->load_session_data($session_id);
-   return $c->render(json => {error => 'Sitzung nicht gefunden'}) unless $session;
+   return $c->render(json => {error => 'Session not found'}) unless $session;
 
    $c->render_later;
    $c->inactivity_timeout(120);
 
-   # 1. Zustand des Verzeichnisses VOR der Ausführung erfassen
+   # 1. Map directory contents BEFORE agent execution
    opendir(my $dh_before, $session->{workdir});
    my %files_before = map { $_ => 1 } readdir($dh_before);
    closedir($dh_before);
@@ -466,15 +465,17 @@ post '/api/chat' => sub ($c) {
        $session->{history} = $messages;
        $c->save_session_data($session_id, $session);
 
-       # 2. Zustand des Verzeichnisses NACH der Ausführung erfassen
+       # 2. Map directory contents AFTER agent execution
        opendir(my $dh_after, $session->{workdir});
        my @all_files = readdir($dh_after);
        closedir($dh_after);
 
-       # Nur Dateien filtern, die in DIESEM Schritt neu erzeugt wurden
+       # Filter out files that already existed in previous rounds
        my @new_files = grep { !$files_before{$_} } @all_files;
 
        my @png_files = grep { !/^\./ && $_ ne $session->{filename} && $_ =~ /\.(?:png|jpe?g|gif|svg)$/i } @new_files;
+       
+       # Filter out Rplots.pdf (R's automatic headless graphics output artifact)
        my @pdf_files = grep { !/^\./ && $_ ne $session->{filename} && $_ ne 'Rplots.pdf' && $_ =~ /\.pdf$/i } @new_files;
 
        my @thumbnails = map { "/api/download/file/$session_id/$_" } @png_files;
@@ -491,7 +492,7 @@ post '/api/chat' => sub ($c) {
 
    })->catch(sub ($err) {
        warn $err;
-       $c->render(json => {error => "Fehler bei der Agenten-Steuerung", details => "$err"}, status => 500);
+       $c->render(json => {error => "Agentic workflow error", details => "$err"}, status => 500);
    });
 };
 
