@@ -13,7 +13,7 @@ use Data::Dumper;
 
 no warnings 'uninitialized';
 
-my $ua = Mojo::UserAgent->new(request_timeout => 90, inactivity_timeout => 90);
+my $ua = Mojo::UserAgent->new(request_timeout => 0, inactivity_timeout => 0);
 $ua->max_connections(0);
 
 my %SESSIONS;
@@ -259,7 +259,7 @@ helper load_session_data => sub ($c, $session_id) {
 # RECURSIVE AGENT TOOL CALLING LOOP
 # ==========================================
 sub run_agent_tool_loop ($c, $messages, $session, $llm_config, $step) {
-    if ($step >= 4) {
+    if ($step >= 15) {
         return Mojo::Promise->resolve({
             output   => "Maximum analysis steps reached.",
             attempts => $step
@@ -360,7 +360,7 @@ post '/api/upload' => sub ($c) {
    my $prompt = prompt_for_loading($filename, $first_500_bytes);
 
    $c->render_later;
-   $c->inactivity_timeout(120);
+   $c->inactivity_timeout(0);
 
    $c->call_chat_llm([{ role => 'user', content => $prompt }], undef, $llm_config)->then(sub ($response) {
        my $r_code = $response->{content};
@@ -381,15 +381,42 @@ post '/api/upload' => sub ($c) {
 
        my @history = (
            {
-               role    => 'system',
+role    => 'system',
                content => "You are an expert statistical assistant. The user uploaded a dataset named '$filename'. "
                         . "A data frame named 'df' has already been loaded for you in R.\n\n"
                         . "Strict Formatting Guidelines:\n"
-                        . "1. NEVER use LaTeX math delimiters like '\$' or '\$\$' in your chat responses.\n"
-                        . "2. NEVER use LaTeX commands like '\\times', '\\frac', '\\cdot', etc.\n"
-                        . "3. Always write formulas and calculations in clean, readable plain Unicode text (e.g., use '×' instead of '\\times' or '*', and use '=' instead of math blocks).\n"
+                        . "1. Always write formulas and calculations in clean, readable plain Unicode text (e.g., use '×' instead of '\\times' or '*', and use '=' instead of math blocks).\n"
                         . "   Example: '5! = 5 × 4 × 3 × 2 × 1 = 120'.\n"
-                        . "4. Present statistical outputs and equations clearly with linebreaks and indentation.\n\n"
+                        . "2. Present statistical outputs and equations clearly with linebreaks and indentation.\n\n"
+                        . "3. Unstructured Text Classification Guidelines (Direct Local LLM via 'httr2'):\n"
+                        . "If the dataset contains columns with unstructured data (such as bank transaction details, 'Verwendungszweck', or feedback) that need to be categorized (e.g., identifying category, country, or sentiment), use the standard 'httr2' library to query the local Ollama API directly to avoid wrapper overhead.\n"
+                        . "Example code pattern to use in your R script:\n"
+                        . "  library(httr2)\n"
+                        . "  model_name <- 'gemma4:e4b-mlx'\n"
+                        . "  \n"
+                        . "  # Helper function for direct API post requests\n"
+                        . "  ollama_generate <- function(prompt, model = model_name) {\n"
+                        . "      tryCatch({\n"
+                        . "          resp <- request('http://localhost:11434/api/generate') |>\n"
+                        . "              req_body_json(list(\n"
+                        . "                  model = model,\n"
+                        . "                  prompt = prompt,\n"
+                        . "                  stream = FALSE\n"
+                        . "              )) |>\n"
+                        . "              req_perform()\n"
+                        . "          body <- resp_body_json(resp)\n"
+                        . "          return(body$response)\n"
+                        . "      }, error = function(e) {\n"
+                        . "          return(NA_character_)\n"
+                        . "      })\n"
+                        . "  }\n"
+                        . "  \n"
+                        . "  # Classify each transaction reference using sapply\n"
+                        . "  df[['Category']] <- sapply(df[['Verwendungszweck']], function(text) {\n"
+                        . "      p_text <- paste0('Classify this bank transaction and return ONLY the category name: ', text)\n"
+                        . "      antwort <- ollama_generate(p_text)\n"
+                        . "      return(trimws(antwort))\n"
+                        . "  })\n\n"
                         . "Execution Guidelines:\n"
                         . "1. Whenever you need to perform calculations, run statistical tests, or generate plots, you MUST use the 'execute_r_code' tool.\n"
                         . "2. Do not write raw markdown code blocks in your chat response; always use the tool instead.\n"
@@ -398,8 +425,7 @@ post '/api/upload' => sub ($c) {
            {
                role    => 'assistant',
                content => "Dataset loaded successfully. Here is the summary:\n\n" . $summary
-           }
-       );
+           });
 
        my $session = {
            workdir     => $workdir,
@@ -434,7 +460,7 @@ post '/api/chat' => sub ($c) {
    return $c->render(json => {error => 'Session not found'}) unless $session;
 
    $c->render_later;
-   $c->inactivity_timeout(120);
+   $c->inactivity_timeout(0);
 
    # 1. Map directory contents BEFORE agent execution
    opendir(my $dh_before, $session->{workdir});
